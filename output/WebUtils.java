@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -107,6 +107,13 @@ public abstract class WebUtils {
 	public static final String HTML_ESCAPE_CONTEXT_PARAM = "defaultHtmlEscape";
 
 	/**
+	 * Use of response encoding for HTML escaping parameter at the servlet context level
+	 * (i.e. a context-param in {@code web.xml}): "responseEncodedHtmlEscape".
+	 * @since 4.1.2
+	 */
+	public static final String RESPONSE_ENCODED_HTML_ESCAPE_CONTEXT_PARAM = "responseEncodedHtmlEscape";
+
+	/**
 	 * Web app root key parameter at the servlet context level
 	 * (i.e. a context-param in {@code web.xml}): "webAppRootKey".
 	 */
@@ -175,7 +182,9 @@ public abstract class WebUtils {
 	 * (if any). Falls back to {@code false} in case of no explicit default given.
 	 * @param servletContext the servlet context of the web application
 	 * @return whether default HTML escaping is enabled (default is false)
+	 * @deprecated as of Spring 4.1, in favor of {@link #getDefaultHtmlEscape}
 	 */
+	@Deprecated
 	public static boolean isDefaultHtmlEscape(ServletContext servletContext) {
 		if (servletContext == null) {
 			return false;
@@ -199,7 +208,28 @@ public abstract class WebUtils {
 			return null;
 		}
 		String param = servletContext.getInitParameter(HTML_ESCAPE_CONTEXT_PARAM);
-		return (StringUtils.hasText(param)? Boolean.valueOf(param) : null);
+		return (StringUtils.hasText(param) ? Boolean.valueOf(param) : null);
+	}
+
+	/**
+	 * Return whether response encoding should be used when HTML escaping characters,
+	 * thus only escaping XML markup significant characters with UTF-* encodings.
+	 * This option is enabled for the web application with a ServletContext param,
+	 * i.e. the value of the "responseEncodedHtmlEscape" context-param in {@code web.xml}
+	 * (if any).
+	 * <p>This method differentiates between no param specified at all and
+	 * an actual boolean value specified, allowing to have a context-specific
+	 * default in case of no setting at the global level.
+	 * @param servletContext the servlet context of the web application
+	 * @return whether response encoding is used for HTML escaping (null = no explicit default)
+	 * @since 4.1.2
+	 */
+	public static Boolean getResponseEncodedHtmlEscape(ServletContext servletContext) {
+		if (servletContext == null) {
+			return null;
+		}
+		String param = servletContext.getInitParameter(RESPONSE_ENCODED_HTML_ESCAPE_CONTEXT_PARAM);
+		return (StringUtils.hasText(param) ? Boolean.valueOf(param) : null);
 	}
 
 	/**
@@ -277,7 +307,7 @@ public abstract class WebUtils {
 	 * @throws IllegalStateException if the session attribute could not be found
 	 */
 	public static Object getRequiredSessionAttribute(HttpServletRequest request, String name)
-		throws IllegalStateException {
+			throws IllegalStateException {
 
 		Object attr = getSessionAttribute(request, name);
 		if (attr == null) {

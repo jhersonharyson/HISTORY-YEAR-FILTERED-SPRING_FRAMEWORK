@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.Part;
 
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.config.ConfigurableBeanFactory;
@@ -69,6 +70,7 @@ import org.springframework.web.util.WebUtils;
  *
  * @author Arjen Poutsma
  * @author Rossen Stoyanchev
+ * @author Brian Clozel
  * @since 3.1
  * @see RequestParamMapMethodArgumentResolver
  */
@@ -150,19 +152,16 @@ public class RequestParamMethodArgumentResolver extends AbstractNamedValueMethod
 
 	@Override
 	protected NamedValueInfo createNamedValueInfo(MethodParameter parameter) {
-		RequestParam annotation = parameter.getParameterAnnotation(RequestParam.class);
-		return (annotation != null) ?
-				new RequestParamNamedValueInfo(annotation) :
-				new RequestParamNamedValueInfo();
+		RequestParam ann = parameter.getParameterAnnotation(RequestParam.class);
+		return (ann != null ? new RequestParamNamedValueInfo(ann) : new RequestParamNamedValueInfo());
 	}
 
 	@Override
 	protected Object resolveName(String name, MethodParameter parameter, NativeWebRequest webRequest) throws Exception {
-		Object arg;
-
 		HttpServletRequest servletRequest = webRequest.getNativeRequest(HttpServletRequest.class);
 		MultipartHttpServletRequest multipartRequest =
-			WebUtils.getNativeRequest(servletRequest, MultipartHttpServletRequest.class);
+				WebUtils.getNativeRequest(servletRequest, MultipartHttpServletRequest.class);
+		Object arg;
 
 		if (MultipartFile.class.equals(parameter.getParameterType())) {
 			assertIsMultipartRequest(servletRequest);
@@ -174,6 +173,12 @@ public class RequestParamMethodArgumentResolver extends AbstractNamedValueMethod
 			Assert.notNull(multipartRequest, "Expected MultipartHttpServletRequest: is a MultipartResolver configured?");
 			arg = multipartRequest.getFiles(name);
 		}
+		else if (isMultipartFileArray(parameter)) {
+			assertIsMultipartRequest(servletRequest);
+			Assert.notNull(multipartRequest, "Expected MultipartHttpServletRequest: is a MultipartResolver configured?");
+			List<MultipartFile> multipartFiles = multipartRequest.getFiles(name);
+			arg = multipartFiles.toArray(new MultipartFile[multipartFiles.size()]);
+		}
 		else if ("javax.servlet.http.Part".equals(parameter.getParameterType().getName())) {
 			assertIsMultipartRequest(servletRequest);
 			arg = servletRequest.getPart(name);
@@ -181,6 +186,10 @@ public class RequestParamMethodArgumentResolver extends AbstractNamedValueMethod
 		else if (isPartCollection(parameter)) {
 			assertIsMultipartRequest(servletRequest);
 			arg = new ArrayList<Object>(servletRequest.getParts());
+		}
+		else if (isPartArray(parameter)) {
+			assertIsMultipartRequest(servletRequest);
+			arg = RequestPartResolver.resolvePart(servletRequest);
 		}
 		else {
 			arg = null;
@@ -218,6 +227,16 @@ public class RequestParamMethodArgumentResolver extends AbstractNamedValueMethod
 		return ((collectionType != null) && "javax.servlet.http.Part".equals(collectionType.getName()));
 	}
 
+	private boolean isPartArray(MethodParameter parameter) {
+		Class<?> paramType = parameter.getParameterType().getComponentType();
+		return ((paramType != null) && "javax.servlet.http.Part".equals(paramType.getName()));
+	}
+
+	private boolean isMultipartFileArray(MethodParameter parameter) {
+		Class<?> paramType = parameter.getParameterType().getComponentType();
+		return ((paramType != null) && MultipartFile.class.equals(paramType));
+	}
+
 	private Class<?> getCollectionParameterType(MethodParameter parameter) {
 		Class<?> paramType = parameter.getParameterType();
 		if (Collection.class.equals(paramType) || List.class.isAssignableFrom(paramType)){
@@ -230,8 +249,8 @@ public class RequestParamMethodArgumentResolver extends AbstractNamedValueMethod
 	}
 
 	@Override
-	protected void handleMissingValue(String paramName, MethodParameter parameter) throws ServletException {
-		throw new MissingServletRequestParameterException(paramName, parameter.getParameterType().getSimpleName());
+	protected void handleMissingValue(String name, MethodParameter parameter) throws ServletException {
+		throw new MissingServletRequestParameterException(name, parameter.getParameterType().getSimpleName());
 	}
 
 	@Override
@@ -244,8 +263,8 @@ public class RequestParamMethodArgumentResolver extends AbstractNamedValueMethod
 			return;
 		}
 
-		RequestParam annot = parameter.getParameterAnnotation(RequestParam.class);
-		String name = StringUtils.isEmpty(annot.value()) ? parameter.getParameterName() : annot.value();
+		RequestParam ann = parameter.getParameterAnnotation(RequestParam.class);
+		String name = (ann == null || StringUtils.isEmpty(ann.value()) ? parameter.getParameterName() : ann.value());
 
 		if (value == null) {
 			builder.queryParam(name);
@@ -262,7 +281,18 @@ public class RequestParamMethodArgumentResolver extends AbstractNamedValueMethod
 	}
 
 	protected String formatUriValue(ConversionService cs, TypeDescriptor sourceType, Object value) {
-		return (cs != null ? (String) cs.convert(value, sourceType, STRING_TYPE_DESCRIPTOR) : null);
+		if (value == null) {
+			return null;
+		}
+		else if (value instanceof String) {
+			return (String) value;
+		}
+		else if (cs != null) {
+			return (String) cs.convert(value, sourceType, STRING_TYPE_DESCRIPTOR);
+		}
+		else {
+			return value.toString();
+		}
 	}
 
 
@@ -274,6 +304,14 @@ public class RequestParamMethodArgumentResolver extends AbstractNamedValueMethod
 
 		public RequestParamNamedValueInfo(RequestParam annotation) {
 			super(annotation.value(), annotation.required(), annotation.defaultValue());
+		}
+	}
+
+
+	private static class RequestPartResolver {
+
+		public static Object resolvePart(HttpServletRequest servletRequest) throws Exception {
+			return servletRequest.getParts().toArray(new Part[servletRequest.getParts().size()]);
 		}
 	}
 

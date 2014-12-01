@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,6 +18,7 @@ package org.springframework.web.socket.adapter;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -39,26 +40,30 @@ import org.springframework.web.socket.WebSocketSession;
  */
 public abstract class AbstractWebSocketSession<T> implements NativeWebSocketSession {
 
-	protected final Log logger = LogFactory.getLog(getClass());
+	protected static final Log logger = LogFactory.getLog(NativeWebSocketSession.class);
+
 
 	private T nativeSession;
 
-	private final Map<String, Object> handshakeAttributes;
+	private final Map<String, Object> attributes = new ConcurrentHashMap<String, Object>();
 
 
 	/**
-	 * Class constructor
-	 * @param handshakeAttributes attributes from the HTTP handshake to make available
-	 * through the WebSocket session
+	 * Create a new instance and associate the given attributes with it.
+	 *
+	 * @param attributes attributes from the HTTP handshake to associate with the WebSocket
+	 * session; the provided attributes are copied, the original map is not used.
 	 */
-	public AbstractWebSocketSession(Map<String, Object> handshakeAttributes) {
-		this.handshakeAttributes = handshakeAttributes;
+	public AbstractWebSocketSession(Map<String, Object> attributes) {
+		if (attributes != null) {
+			this.attributes.putAll(attributes);
+		}
 	}
 
 
 	@Override
-	public Map<String, Object> getHandshakeAttributes() {
-		return this.handshakeAttributes;
+	public Map<String, Object> getAttributes() {
+		return this.attributes;
 	}
 
 	@Override
@@ -140,7 +145,12 @@ public abstract class AbstractWebSocketSession<T> implements NativeWebSocketSess
 
 	@Override
 	public String toString() {
-		return "WebSocket session id=" + getId();
+		if (this.nativeSession != null) {
+			return getClass().getSimpleName() + "[id=" + getId() + ", uri=" + getUri() + "]";
+		}
+		else {
+			return getClass().getSimpleName() + "[nativeSession=null]";
+		}
 	}
 
 }

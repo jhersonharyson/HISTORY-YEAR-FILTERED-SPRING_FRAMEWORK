@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -124,7 +125,7 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 	/** Resolution strategy for expressions in bean definition values */
 	private BeanExpressionResolver beanExpressionResolver;
 
-	/** Spring 3.0 ConversionService to use instead of PropertyEditors */
+	/** Spring ConversionService to use instead of PropertyEditors */
 	private ConversionService conversionService;
 
 	/** Custom PropertyEditorRegistrars to apply to the beans of this factory */
@@ -151,7 +152,7 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 	private boolean hasDestructionAwareBeanPostProcessors;
 
 	/** Map from scope identifier String to corresponding Scope */
-	private final Map<String, Scope> scopes = new HashMap<String, Scope>(8);
+	private final Map<String, Scope> scopes = new LinkedHashMap<String, Scope>(8);
 
 	/** Security context used when running with a SecurityManager */
 	private SecurityContextProvider securityContextProvider;
@@ -160,9 +161,7 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 	private final Map<String, RootBeanDefinition> mergedBeanDefinitions =
 			new ConcurrentHashMap<String, RootBeanDefinition>(64);
 
-	/**
-	 * Names of beans that have already been created at least once
-	 */
+	/** Names of beans that have already been created at least once */
 	private final Set<String> alreadyCreated = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>(64));
 
 	/** Names of beans that are currently in creation */
@@ -209,8 +208,8 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 	 * Return an instance, which may be shared or independent, of the specified bean.
 	 * @param name the name of the bean to retrieve
 	 * @param requiredType the required type of the bean to retrieve
-	 * @param args arguments to use if creating a prototype using explicit arguments to a
-	 * static factory method. It is invalid to use a non-null args value in any other case.
+	 * @param args arguments to use when creating a bean instance using explicit arguments
+	 * (only applied when creating a new instance as opposed to retrieving an existing one)
 	 * @return an instance of the bean
 	 * @throws BeansException if the bean could not be created
 	 */
@@ -222,8 +221,8 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 	 * Return an instance, which may be shared or independent, of the specified bean.
 	 * @param name the name of the bean to retrieve
 	 * @param requiredType the required type of the bean to retrieve
-	 * @param args arguments to use if creating a prototype using explicit arguments to a
-	 * static factory method. It is invalid to use a non-null args value in any other case.
+	 * @param args arguments to use when creating a bean instance using explicit arguments
+	 * (only applied when creating a new instance as opposed to retrieving an existing one)
 	 * @param typeCheckOnly whether the instance is obtained for a type check,
 	 * not for actual use
 	 * @return an instance of the bean
@@ -287,8 +286,8 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 				if (dependsOn != null) {
 					for (String dependsOnBean : dependsOn) {
 						if (isDependent(beanName, dependsOnBean)) {
-							throw new BeanCreationException("Circular depends-on relationship between '" +
-									beanName + "' and '" + dependsOnBean + "'");
+							throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+									"Circular depends-on relationship between '" + beanName + "' and '" + dependsOnBean + "'");
 						}
 						registerDependentBean(dependsOnBean, beanName);
 						getBean(dependsOnBean);
@@ -857,7 +856,17 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 		if (SCOPE_SINGLETON.equals(scopeName) || SCOPE_PROTOTYPE.equals(scopeName)) {
 			throw new IllegalArgumentException("Cannot replace existing scopes 'singleton' and 'prototype'");
 		}
-		this.scopes.put(scopeName, scope);
+		Scope previous = this.scopes.put(scopeName, scope);
+		if (previous != null && previous != scope) {
+			if (logger.isInfoEnabled()) {
+				logger.info("Replacing scope '" + scopeName + "' from [" + previous + "] to [" + scope + "]");
+			}
+		}
+		else {
+			if (logger.isDebugEnabled()) {
+				logger.debug("Registering scope '" + scopeName + "' with implementation [" + scope + "]");
+			}
+		}
 	}
 
 	@Override
@@ -961,7 +970,7 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 
 	@Override
 	public boolean isActuallyInCreation(String beanName) {
-		return isSingletonCurrentlyInCreation(beanName) || isPrototypeCurrentlyInCreation(beanName);
+		return (isSingletonCurrentlyInCreation(beanName) || isPrototypeCurrentlyInCreation(beanName));
 	}
 
 	/**
@@ -1268,16 +1277,8 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 	protected void checkMergedBeanDefinition(RootBeanDefinition mbd, String beanName, Object[] args)
 			throws BeanDefinitionStoreException {
 
-		// check if bean definition is not abstract
 		if (mbd.isAbstract()) {
 			throw new BeanIsAbstractException(beanName);
-		}
-
-		// Check validity of the usage of the args parameter. This can
-		// only be used for prototypes constructed via a factory method.
-		if (args != null && !mbd.isPrototype()) {
-			throw new BeanDefinitionStoreException(
-					"Can only specify arguments for the getBean method when referring to a prototype bean definition");
 		}
 	}
 
@@ -1422,8 +1423,8 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 		}
 		catch (BeanCreationException ex) {
 			// Can only happen when getting a FactoryBean.
-			if (logger.isDebugEnabled()) {
-				logger.debug("Ignoring bean creation exception on FactoryBean type check: " + ex);
+			if (logger.isWarnEnabled()) {
+				logger.warn("Bean creation exception on FactoryBean type check: " + ex);
 			}
 			onSuppressedException(ex);
 			return null;
@@ -1437,7 +1438,9 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 	 * @param beanName the name of the bean
 	 */
 	protected void markBeanAsCreated(String beanName) {
-		this.alreadyCreated.add(beanName);
+		if (!this.alreadyCreated.contains(beanName)) {
+			this.alreadyCreated.add(beanName);
+		}
 	}
 
 	/**
@@ -1619,16 +1622,13 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 	protected abstract BeanDefinition getBeanDefinition(String beanName) throws BeansException;
 
 	/**
-	 * Create a bean instance for the given bean definition.
-	 * The bean definition will already have been merged with the parent
-	 * definition in case of a child definition.
-	 * <p>All the other methods in this class invoke this method, although
-	 * beans may be cached after being instantiated by this method. All bean
-	 * instantiation within this class is performed by this method.
+	 * Create a bean instance for the given merged bean definition (and arguments).
+	 * The bean definition will already have been merged with the parent definition
+	 * in case of a child definition.
+	 * <p>All bean retrieval methods delegate to this method for actual bean creation.
 	 * @param beanName the name of the bean
 	 * @param mbd the merged bean definition for the bean
-	 * @param args arguments to use if creating a prototype using explicit arguments to a
-	 * static factory method. This parameter must be {@code null} except in this case.
+	 * @param args explicit arguments to use for constructor or factory method invocation
 	 * @return a new instance of the bean
 	 * @throws BeanCreationException if the bean could not be created
 	 */

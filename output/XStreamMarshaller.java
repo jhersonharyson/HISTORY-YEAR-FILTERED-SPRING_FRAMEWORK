@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@ import javax.xml.stream.XMLEventWriter;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 import javax.xml.stream.XMLStreamWriter;
+import javax.xml.transform.stream.StreamSource;
 
 import com.thoughtworks.xstream.MarshallingStrategy;
 import com.thoughtworks.xstream.XStream;
@@ -49,6 +50,7 @@ import com.thoughtworks.xstream.io.HierarchicalStreamDriver;
 import com.thoughtworks.xstream.io.HierarchicalStreamReader;
 import com.thoughtworks.xstream.io.HierarchicalStreamWriter;
 import com.thoughtworks.xstream.io.StreamException;
+import com.thoughtworks.xstream.io.naming.NameCoder;
 import com.thoughtworks.xstream.io.xml.CompactWriter;
 import com.thoughtworks.xstream.io.xml.DomReader;
 import com.thoughtworks.xstream.io.xml.DomWriter;
@@ -91,13 +93,12 @@ import org.springframework.util.xml.StaxUtils;
  * as this can result in <b>security vulnerabilities</b>. If you do use the
  * {@code XStreamMarshaller} to unmarshal external XML, set the
  * {@link #setSupportedClasses(Class[]) supportedClasses} and
- * {@link #setConverters(ConverterMatcher[]) converters} properties (possibly using a
- * {@link CatchAllConverter} as the last converter in the list) or override the
- * {@link #customizeXStream(XStream)} method to make sure it only accepts the classes
- * you want it to support.
+ * {@link #setConverters(ConverterMatcher[]) converters} properties (possibly using
+ * a {@link CatchAllConverter}) or override the {@link #customizeXStream(XStream)}
+ * method to make sure it only accepts the classes you want it to support.
  *
- * <p>Due to XStream's API, it is required to set the encoding used for writing to OutputStreams.
- * It defaults to {@code UTF-8}.
+ * <p>Due to XStream's API, it is required to set the encoding used for writing to
+ * OutputStreams. It defaults to {@code UTF-8}.
  *
  * <p><b>NOTE:</b> XStream is an XML serialization library, not a data binding library.
  * Therefore, it has limited namespace support. As such, it is rather unsuitable for
@@ -124,7 +125,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 
 	private HierarchicalStreamDriver streamDriver;
 
-	private final XppDriver fallbackDriver = new XppDriver();
+	private HierarchicalStreamDriver defaultDriver;
 
 	private Mapper mapper;
 
@@ -160,6 +161,8 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 
 	private String encoding = DEFAULT_ENCODING;
 
+	private NameCoder nameCoder = new XmlFriendlyNameCoder();
+
 	private Class<?>[] supportedClasses;
 
 	private ClassLoader beanClassLoader = new CompositeClassLoader();
@@ -182,6 +185,14 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 	 */
 	public void setStreamDriver(HierarchicalStreamDriver streamDriver) {
 		this.streamDriver = streamDriver;
+		this.defaultDriver = streamDriver;
+	}
+
+	private HierarchicalStreamDriver getDefaultDriver() {
+		if (this.defaultDriver == null) {
+			this.defaultDriver = new XppDriver();
+		}
+		return this.defaultDriver;
 	}
 
 	/**
@@ -253,7 +264,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 	}
 
 	/**
-	 * Set an alias/type map, consisting of string aliases mapped to classes.
+	 * Set the alias/type map, consisting of string aliases mapped to classes.
 	 * <p>Keys are aliases; values are either {@code Class} instances, or String class names.
 	 * @see XStream#alias(String, Class)
 	 */
@@ -262,7 +273,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 	}
 
 	/**
-	 * Sets the aliases by type map, consisting of string aliases mapped to classes.
+	 * Set the <em>aliases by type</em> map, consisting of string aliases mapped to classes.
 	 * <p>Any class that is assignable to this type will be aliased to the same name.
 	 * Keys are aliases; values are either {@code Class} instances, or String class names.
 	 * @see XStream#aliasType(String, Class)
@@ -272,7 +283,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 	}
 
 	/**
-	 * Set a field alias/type map, consiting of field names.
+	 * Set the field alias/type map, consisting of field names.
 	 * @see XStream#aliasField(String, Class, String)
 	 */
 	public void setFieldAliases(Map<String, String> fieldAliases) {
@@ -343,6 +354,20 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 		this.encoding = encoding;
 	}
 
+	@Override
+	protected String getDefaultEncoding() {
+		return this.encoding;
+	}
+
+	/**
+	 * Set a custom XStream {@link NameCoder} to use.
+	 * The default is an {@link XmlFriendlyNameCoder}.
+	 * @since 4.0.4
+	 */
+	public void setNameCoder(NameCoder nameCoder) {
+		this.nameCoder = nameCoder;
+	}
+
 	/**
 	 * Set the classes supported by this marshaller.
 	 * <p>If this property is empty (the default), all classes are supported.
@@ -384,7 +409,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 	protected XStream constructXStream() {
 		// The referenced XStream constructor has been deprecated as of 1.4.5.
 		// We're preserving this call for broader XStream 1.4.x compatibility.
-		return new XStream(this.reflectionProvider, this.streamDriver,
+		return new XStream(this.reflectionProvider, getDefaultDriver(),
 				this.beanClassLoader, this.mapper, this.converterLookup, this.converterRegistry) {
 			@Override
 			protected MapperWrapper wrapMapper(MapperWrapper next) {
@@ -540,7 +565,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 			xstream.processAnnotations(this.annotatedClasses);
 		}
 		if (this.autodetectAnnotations) {
-			xstream.autodetectAnnotations(this.autodetectAnnotations);
+			xstream.autodetectAnnotations(true);
 		}
 	}
 
@@ -609,10 +634,10 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 	protected void marshalDomNode(Object graph, Node node) throws XmlMappingException {
 		HierarchicalStreamWriter streamWriter;
 		if (node instanceof Document) {
-			streamWriter = new DomWriter((Document) node);
+			streamWriter = new DomWriter((Document) node, this.nameCoder);
 		}
 		else if (node instanceof Element) {
-			streamWriter = new DomWriter((Element) node, node.getOwnerDocument(), new XmlFriendlyNameCoder());
+			streamWriter = new DomWriter((Element) node, node.getOwnerDocument(), this.nameCoder);
 		}
 		else {
 			throw new IllegalArgumentException("DOMResult contains neither Document nor Element");
@@ -623,13 +648,17 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 	@Override
 	protected void marshalXmlEventWriter(Object graph, XMLEventWriter eventWriter) throws XmlMappingException {
 		ContentHandler contentHandler = StaxUtils.createContentHandler(eventWriter);
-		marshalSaxHandlers(graph, contentHandler, null);
+		LexicalHandler lexicalHandler = null;
+		if (contentHandler instanceof LexicalHandler) {
+			lexicalHandler = (LexicalHandler) contentHandler;
+		}
+		marshalSaxHandlers(graph, contentHandler, lexicalHandler);
 	}
 
 	@Override
 	protected void marshalXmlStreamWriter(Object graph, XMLStreamWriter streamWriter) throws XmlMappingException {
 		try {
-			doMarshal(graph, new StaxWriter(new QNameMap(), streamWriter), null);
+			doMarshal(graph, new StaxWriter(new QNameMap(), streamWriter, this.nameCoder), null);
 		}
 		catch (XMLStreamException ex) {
 			throw convertXStreamException(ex, true);
@@ -640,7 +669,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 	protected void marshalSaxHandlers(Object graph, ContentHandler contentHandler, LexicalHandler lexicalHandler)
 			throws XmlMappingException {
 
-		SaxWriter saxWriter = new SaxWriter();
+		SaxWriter saxWriter = new SaxWriter(this.nameCoder);
 		saxWriter.setContentHandler(contentHandler);
 		doMarshal(graph, saxWriter, null);
 	}
@@ -702,13 +731,26 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 	// Unmarshalling
 
 	@Override
+	protected Object unmarshalStreamSource(StreamSource streamSource) throws XmlMappingException, IOException {
+		if (streamSource.getInputStream() != null) {
+			return unmarshalInputStream(streamSource.getInputStream());
+		}
+		else if (streamSource.getReader() != null) {
+			return unmarshalReader(streamSource.getReader());
+		}
+		else {
+			throw new IllegalArgumentException("StreamSource contains neither InputStream nor Reader");
+		}
+	}
+
+	@Override
 	protected Object unmarshalDomNode(Node node) throws XmlMappingException {
 		HierarchicalStreamReader streamReader;
 		if (node instanceof Document) {
-			streamReader = new DomReader((Document) node);
+			streamReader = new DomReader((Document) node, this.nameCoder);
 		}
 		else if (node instanceof Element) {
-			streamReader = new DomReader((Element) node);
+			streamReader = new DomReader((Element) node, this.nameCoder);
 		}
 		else {
 			throw new IllegalArgumentException("DOMSource contains neither Document nor Element");
@@ -729,7 +771,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 
 	@Override
 	protected Object unmarshalXmlStreamReader(XMLStreamReader streamReader) throws XmlMappingException {
-        return doUnmarshal(new StaxReader(new QNameMap(), streamReader), null);
+        return doUnmarshal(new StaxReader(new QNameMap(), streamReader, this.nameCoder), null);
 	}
 
 	@Override
@@ -760,12 +802,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements Initializin
 	}
 
 	public Object unmarshalReader(Reader reader, DataHolder dataHolder) throws XmlMappingException, IOException {
-        if (this.streamDriver != null) {
-            return doUnmarshal(this.streamDriver.createReader(reader), dataHolder);
-        }
-        else {
-            return doUnmarshal(this.fallbackDriver.createReader(reader), dataHolder);
-        }
+		return doUnmarshal(getDefaultDriver().createReader(reader), dataHolder);
 	}
 
     /**

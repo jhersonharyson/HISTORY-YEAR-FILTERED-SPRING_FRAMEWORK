@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -81,6 +81,7 @@ class BeanDefinitionValueResolver {
 		this.typeConverter = typeConverter;
 	}
 
+
 	/**
 	 * Given a PropertyValue, return a value, resolving any references to other
 	 * beans in the factory if necessary. The value could be:
@@ -108,7 +109,7 @@ class BeanDefinitionValueResolver {
 		}
 		else if (value instanceof RuntimeBeanNameReference) {
 			String refName = ((RuntimeBeanNameReference) value).getBeanName();
-			refName = String.valueOf(evaluate(refName));
+			refName = String.valueOf(doEvaluate(refName));
 			if (!this.beanFactory.containsBean(refName)) {
 				throw new BeanDefinitionStoreException(
 						"Invalid bean name '" + refName + "' in bean reference for " + argName);
@@ -123,7 +124,9 @@ class BeanDefinitionValueResolver {
 		else if (value instanceof BeanDefinition) {
 			// Resolve plain BeanDefinition, without contained name: use dummy name.
 			BeanDefinition bd = (BeanDefinition) value;
-			return resolveInnerBean(argName, "(inner bean)", bd);
+			String innerBeanName = "(inner bean)" + BeanFactoryUtils.GENERATED_BEAN_NAME_SEPARATOR +
+					ObjectUtils.getIdentityHexString(bd);
+			return resolveInnerBean(argName, innerBeanName, bd);
 		}
 		else if (value instanceof ManagedArray) {
 			// May need to resolve contained runtime references.
@@ -208,7 +211,7 @@ class BeanDefinitionValueResolver {
 	 * @return the resolved value
 	 */
 	protected Object evaluate(TypedStringValue value) {
-		Object result = this.beanFactory.evaluateBeanDefinitionString(value.getValue(), this.beanDefinition);
+		Object result = doEvaluate(value.getValue());
 		if (!ObjectUtils.nullSafeEquals(result, value.getValue())) {
 			value.setDynamic();
 		}
@@ -217,16 +220,39 @@ class BeanDefinitionValueResolver {
 
 	/**
 	 * Evaluate the given value as an expression, if necessary.
-	 * @param value the candidate value (may be an expression)
-	 * @return the resolved value
+	 * @param value the original value (may be an expression)
+	 * @return the resolved value if necessary, or the original value
 	 */
 	protected Object evaluate(Object value) {
 		if (value instanceof String) {
-			return this.beanFactory.evaluateBeanDefinitionString((String) value, this.beanDefinition);
+			return doEvaluate((String) value);
+		}
+		else if (value instanceof String[]) {
+			String[] values = (String[]) value;
+			boolean actuallyResolved = false;
+			Object[] resolvedValues = new Object[values.length];
+			for (int i = 0; i < values.length; i++) {
+				String originalValue = values[i];
+				Object resolvedValue = doEvaluate(originalValue);
+				if (resolvedValue != originalValue) {
+					actuallyResolved = true;
+				}
+				resolvedValues[i] = resolvedValue;
+			}
+			return (actuallyResolved ? resolvedValues : values);
 		}
 		else {
 			return value;
 		}
+	}
+
+	/**
+	 * Evaluate the given String value as an expression, if necessary.
+	 * @param value the original value (may be an expression)
+	 * @return the resolved value if necessary, or the original String value
+	 */
+	private Object doEvaluate(String value) {
+		return this.beanFactory.evaluateBeanDefinitionString(value, this.beanDefinition);
 	}
 
 	/**
@@ -256,20 +282,25 @@ class BeanDefinitionValueResolver {
 			mbd = this.beanFactory.getMergedBeanDefinition(innerBeanName, innerBd, this.beanDefinition);
 			// Check given bean name whether it is unique. If not already unique,
 			// add counter - increasing the counter until the name is unique.
-			String actualInnerBeanName = adaptInnerBeanName(innerBeanName);
+			String actualInnerBeanName = innerBeanName;
+			if (mbd.isSingleton()) {
+				actualInnerBeanName = adaptInnerBeanName(innerBeanName);
+			}
 			this.beanFactory.registerContainedBean(actualInnerBeanName, this.beanName);
 			// Guarantee initialization of beans that the inner bean depends on.
 			String[] dependsOn = mbd.getDependsOn();
 			if (dependsOn != null) {
 				for (String dependsOnBean : dependsOn) {
-					this.beanFactory.getBean(dependsOnBean);
 					this.beanFactory.registerDependentBean(dependsOnBean, actualInnerBeanName);
+					this.beanFactory.getBean(dependsOnBean);
 				}
 			}
+			// Actually create the inner bean instance now...
 			Object innerBean = this.beanFactory.createBean(actualInnerBeanName, mbd, null);
 			if (innerBean instanceof FactoryBean) {
 				boolean synthetic = mbd.isSynthetic();
-				return this.beanFactory.getObjectFromFactoryBean((FactoryBean<?>) innerBean, actualInnerBeanName, !synthetic);
+				return this.beanFactory.getObjectFromFactoryBean(
+						(FactoryBean<?>) innerBean, actualInnerBeanName, !synthetic);
 			}
 			else {
 				return innerBean;
@@ -306,7 +337,7 @@ class BeanDefinitionValueResolver {
 	private Object resolveReference(Object argName, RuntimeBeanReference ref) {
 		try {
 			String refName = ref.getBeanName();
-			refName = String.valueOf(evaluate(refName));
+			refName = String.valueOf(doEvaluate(refName));
 			if (ref.isToParent()) {
 				if (this.beanFactory.getParentBeanFactory() == null) {
 					throw new BeanCreationException(

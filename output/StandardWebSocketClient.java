@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,27 +25,33 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
-
-import javax.websocket.*;
+import javax.websocket.ClientEndpointConfig;
 import javax.websocket.ClientEndpointConfig.Configurator;
+import javax.websocket.ContainerProvider;
+import javax.websocket.Endpoint;
+import javax.websocket.Extension;
+import javax.websocket.HandshakeResponse;
+import javax.websocket.WebSocketContainer;
 
 import org.springframework.core.task.AsyncListenableTaskExecutor;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.http.HttpHeaders;
+import org.springframework.lang.UsesJava7;
 import org.springframework.util.Assert;
 import org.springframework.util.concurrent.ListenableFuture;
+import org.springframework.util.concurrent.ListenableFutureTask;
+import org.springframework.web.socket.WebSocketExtension;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.adapter.standard.StandardWebSocketHandlerAdapter;
 import org.springframework.web.socket.adapter.standard.StandardWebSocketSession;
 import org.springframework.web.socket.adapter.standard.WebSocketToStandardExtensionAdapter;
 import org.springframework.web.socket.client.AbstractWebSocketClient;
-import org.springframework.web.socket.WebSocketExtension;
 
 /**
- * Initiates WebSocket requests to a WebSocket server programatically through the standard
- * Java WebSocket API.
+ * Initiates WebSocket requests to a WebSocket server programmatically
+ * through the standard Java WebSocket API.
  *
  * @author Rossen Stoyanchev
  * @since 4.0
@@ -54,36 +60,37 @@ public class StandardWebSocketClient extends AbstractWebSocketClient {
 
 	private final WebSocketContainer webSocketContainer;
 
-	private AsyncListenableTaskExecutor taskExecutor =
-			new SimpleAsyncTaskExecutor("WebSocketClient-");
+	private AsyncListenableTaskExecutor taskExecutor = new SimpleAsyncTaskExecutor();
 
 
 	/**
-	 * Default constructor that calls {@code ContainerProvider.getWebSocketContainer()} to
-	 * obtain a {@link WebSocketContainer} instance.
+	 * Default constructor that calls {@code ContainerProvider.getWebSocketContainer()}
+	 * to obtain a (new) {@link WebSocketContainer} instance. Also see constructor
+	 * accepting existing {@code WebSocketContainer} instance.
 	 */
 	public StandardWebSocketClient() {
 		this.webSocketContainer = ContainerProvider.getWebSocketContainer();
 	}
 
 	/**
-	 * Constructor that accepts a pre-configured {@link WebSocketContainer} instance. If
-	 * using XML configuration see {@link WebSocketContainerFactoryBean}. In Java
-	 * configuration use {@code ContainerProvider.getWebSocketContainer()} to obtain
-	 * a container instance.
+	 * Constructor accepting an existing {@link WebSocketContainer} instance.
+	 * <p>For XML configuration, see {@link WebSocketContainerFactoryBean}. For Java
+	 * configuration, use {@code ContainerProvider.getWebSocketContainer()} to obtain
+	 * the {@code WebSocketContainer} instance.
 	 */
 	public StandardWebSocketClient(WebSocketContainer webSocketContainer) {
-		Assert.notNull(webSocketContainer, "webSocketContainer must not be null");
+		Assert.notNull(webSocketContainer, "WebSocketContainer must not be null");
 		this.webSocketContainer = webSocketContainer;
 	}
 
 
 	/**
-	 * Set a {@link TaskExecutor} to use to open the connection.
-	 * By default {@link SimpleAsyncTaskExecutor} is used.
+	 * Set an {@link AsyncListenableTaskExecutor} to use when opening connections.
+	 * If this property is set to {@code null}, calls to  any of the
+	 * {@code doHandshake} methods will block until the connection is established.
+	 * <p>By default, an instance of {@code SimpleAsyncTaskExecutor} is used.
 	 */
 	public void setTaskExecutor(AsyncListenableTaskExecutor taskExecutor) {
-		Assert.notNull(taskExecutor, "TaskExecutor must not be null");
 		this.taskExecutor = taskExecutor;
 	}
 
@@ -94,46 +101,57 @@ public class StandardWebSocketClient extends AbstractWebSocketClient {
 		return this.taskExecutor;
 	}
 
+
 	@Override
 	protected ListenableFuture<WebSocketSession> doHandshakeInternal(WebSocketHandler webSocketHandler,
 			HttpHeaders headers, final URI uri, List<String> protocols,
-			List<WebSocketExtension> extensions, Map<String, Object> handshakeAttributes) {
+			List<WebSocketExtension> extensions, Map<String, Object> attributes) {
 
 		int port = getPort(uri);
 		InetSocketAddress localAddress = new InetSocketAddress(getLocalHost(), port);
 		InetSocketAddress remoteAddress = new InetSocketAddress(uri.getHost(), port);
 
 		final StandardWebSocketSession session = new StandardWebSocketSession(headers,
-				handshakeAttributes, localAddress, remoteAddress);
+				attributes, localAddress, remoteAddress);
 
-		final ClientEndpointConfig.Builder configBuidler = ClientEndpointConfig.Builder.create();
-		configBuidler.configurator(new StandardWebSocketClientConfigurator(headers));
-		configBuidler.preferredSubprotocols(protocols);
-		configBuidler.extensions(adaptExtensions(extensions));
+		final ClientEndpointConfig.Builder configBuilder = ClientEndpointConfig.Builder.create();
+		configBuilder.configurator(new StandardWebSocketClientConfigurator(headers));
+		configBuilder.preferredSubprotocols(protocols);
+		configBuilder.extensions(adaptExtensions(extensions));
 		final Endpoint endpoint = new StandardWebSocketHandlerAdapter(webSocketHandler, session);
 
-		return this.taskExecutor.submitListenable(new Callable<WebSocketSession>() {
+		Callable<WebSocketSession> connectTask = new Callable<WebSocketSession>() {
 			@Override
 			public WebSocketSession call() throws Exception {
-				webSocketContainer.connectToServer(endpoint, configBuidler.build(), uri);
+				webSocketContainer.connectToServer(endpoint, configBuilder.build(), uri);
 				return session;
 			}
-		});
+		};
+
+		if (this.taskExecutor != null) {
+			return this.taskExecutor.submitListenable(connectTask);
+		}
+		else {
+			ListenableFutureTask<WebSocketSession> task = new ListenableFutureTask<WebSocketSession>(connectTask);
+			task.run();
+			return task;
+		}
 	}
 
 	private static List<Extension> adaptExtensions(List<WebSocketExtension> extensions) {
 		List<Extension> result = new ArrayList<Extension>();
-		for (WebSocketExtension e : extensions) {
-			result.add(new WebSocketToStandardExtensionAdapter(e));
+		for (WebSocketExtension extension : extensions) {
+			result.add(new WebSocketToStandardExtensionAdapter(extension));
 		}
 		return result;
 	}
 
+	@UsesJava7  // fallback to InetAddress.getLoopbackAddress()
 	private InetAddress getLocalHost() {
 		try {
 			return InetAddress.getLocalHost();
 		}
-		catch (UnknownHostException e) {
+		catch (UnknownHostException ex) {
 			return InetAddress.getLoopbackAddress();
 		}
 	}
@@ -141,7 +159,7 @@ public class StandardWebSocketClient extends AbstractWebSocketClient {
 	private int getPort(URI uri) {
 		if (uri.getPort() == -1) {
 	        String scheme = uri.getScheme().toLowerCase(Locale.ENGLISH);
-	        return "wss".equals(scheme) ? 443 : 80;
+	        return ("wss".equals(scheme) ? 443 : 80);
 		}
 		return uri.getPort();
 	}
@@ -151,7 +169,6 @@ public class StandardWebSocketClient extends AbstractWebSocketClient {
 
 		private final HttpHeaders headers;
 
-
 		public StandardWebSocketClientConfigurator(HttpHeaders headers) {
 			this.headers = headers;
 		}
@@ -159,14 +176,14 @@ public class StandardWebSocketClient extends AbstractWebSocketClient {
 		@Override
 		public void beforeRequest(Map<String, List<String>> requestHeaders) {
 			requestHeaders.putAll(this.headers);
-			if (logger.isDebugEnabled()) {
-				logger.debug("Handshake request headers: " + requestHeaders);
+			if (logger.isTraceEnabled()) {
+				logger.trace("Handshake request headers: " + requestHeaders);
 			}
 		}
 		@Override
 		public void afterResponse(HandshakeResponse response) {
-			if (logger.isDebugEnabled()) {
-				logger.debug("Handshake response headers: " + response.getHeaders());
+			if (logger.isTraceEnabled()) {
+				logger.trace("Handshake response headers: " + response.getHeaders());
 			}
 		}
 	}

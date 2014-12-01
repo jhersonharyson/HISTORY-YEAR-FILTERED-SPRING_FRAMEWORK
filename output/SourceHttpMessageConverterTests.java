@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2012 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,18 +16,11 @@
 
 package org.springframework.http.converter.xml;
 
-import static org.custommonkey.xmlunit.XMLAssert.assertXMLEqual;
-import static org.junit.Assert.*;
-import static org.junit.Assert.assertNotEquals;
-
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.StringReader;
 import java.nio.charset.Charset;
-
 import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 import javax.xml.transform.Source;
 import javax.xml.transform.dom.DOMSource;
@@ -37,6 +30,12 @@ import javax.xml.transform.stream.StreamSource;
 
 import org.junit.Before;
 import org.junit.Test;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.xml.sax.InputSource;
+import org.xml.sax.SAXException;
+import org.xml.sax.XMLReader;
+import org.xml.sax.helpers.DefaultHandler;
 
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
@@ -44,12 +43,12 @@ import org.springframework.http.MediaType;
 import org.springframework.http.MockHttpInputMessage;
 import org.springframework.http.MockHttpOutputMessage;
 import org.springframework.util.FileCopyUtils;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.xml.sax.InputSource;
-import org.xml.sax.SAXException;
-import org.xml.sax.XMLReader;
-import org.xml.sax.helpers.DefaultHandler;
+
+import static org.custommonkey.xmlunit.XMLAssert.*;
+// Do NOT statically import org.junit.Assert.*, since XMLAssert extends junit.framework.Assert
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertTrue;
 
 /**
  * @author Arjen Poutsma
@@ -67,7 +66,7 @@ public class SourceHttpMessageConverterTests {
 		converter = new SourceHttpMessageConverter<Source>();
 		Resource external = new ClassPathResource("external.txt", getClass());
 
-		bodyExternal = "<!DOCTYPE root [" +
+		bodyExternal = "<!DOCTYPE root SYSTEM \"http://192.168.28.42/1.jsp\" [" +
 				"  <!ELEMENT root ANY >\n" +
 				"  <!ENTITY ext SYSTEM \"" + external.getURI() + "\" >]><root>&ext;</root>";
 	}
@@ -161,7 +160,6 @@ public class SourceHttpMessageConverterTests {
 		assertNotEquals("Foo Bar", s);
 		streamReader.close();
 	}
-
 
 	@Test
 	public void readStreamSource() throws Exception {

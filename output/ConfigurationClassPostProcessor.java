@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@
 package org.springframework.context.annotation;
 
 import java.beans.PropertyDescriptor;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -53,13 +53,9 @@ import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.context.EnvironmentAware;
 import org.springframework.context.ResourceLoaderAware;
 import org.springframework.context.annotation.ConfigurationClassEnhancer.EnhancedConfiguration;
-import org.springframework.context.annotation.ConfigurationClassParser.ImportRegistry;
 import org.springframework.core.Ordered;
 import org.springframework.core.PriorityOrdered;
-import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.Environment;
-import org.springframework.core.env.MutablePropertySources;
-import org.springframework.core.env.PropertySource;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.core.type.AnnotationMetadata;
@@ -232,11 +228,11 @@ public class ConfigurationClassPostProcessor implements BeanDefinitionRegistryPo
 		int registryId = System.identityHashCode(registry);
 		if (this.registriesPostProcessed.contains(registryId)) {
 			throw new IllegalStateException(
-					"postProcessBeanDefinitionRegistry already called for this post-processor against " + registry);
+					"postProcessBeanDefinitionRegistry already called on this post-processor against " + registry);
 		}
 		if (this.factoriesPostProcessed.contains(registryId)) {
 			throw new IllegalStateException(
-					"postProcessBeanFactory already called for this post-processor against " + registry);
+					"postProcessBeanFactory already called on this post-processor against " + registry);
 		}
 		this.registriesPostProcessed.add(registryId);
 
@@ -252,7 +248,7 @@ public class ConfigurationClassPostProcessor implements BeanDefinitionRegistryPo
 		int factoryId = System.identityHashCode(beanFactory);
 		if (this.factoriesPostProcessed.contains(factoryId)) {
 			throw new IllegalStateException(
-					"postProcessBeanFactory already called for this post-processor against " + beanFactory);
+					"postProcessBeanFactory already called on this post-processor against " + beanFactory);
 		}
 		this.factoriesPostProcessed.add(factoryId);
 		if (!this.registriesPostProcessed.contains(factoryId)) {
@@ -269,9 +265,17 @@ public class ConfigurationClassPostProcessor implements BeanDefinitionRegistryPo
 	 */
 	public void processConfigBeanDefinitions(BeanDefinitionRegistry registry) {
 		Set<BeanDefinitionHolder> configCandidates = new LinkedHashSet<BeanDefinitionHolder>();
-		for (String beanName : registry.getBeanDefinitionNames()) {
+		String[] candidateNames = registry.getBeanDefinitionNames();
+
+		for (String beanName : candidateNames) {
 			BeanDefinition beanDef = registry.getBeanDefinition(beanName);
-			if (ConfigurationClassUtils.checkConfigurationClassCandidate(beanDef, this.metadataReaderFactory)) {
+			if (ConfigurationClassUtils.isFullConfigurationClass(beanDef) ||
+					ConfigurationClassUtils.isLiteConfigurationClass(beanDef)) {
+				if (logger.isDebugEnabled()) {
+					logger.debug("Bean definition has already been processed as a configuration class: " + beanDef);
+				}
+			}
+			else if (ConfigurationClassUtils.checkConfigurationClassCandidate(beanDef, this.metadataReaderFactory)) {
 				configCandidates.add(new BeanDefinitionHolder(beanDef, beanName));
 			}
 		}
@@ -296,32 +300,45 @@ public class ConfigurationClassPostProcessor implements BeanDefinitionRegistryPo
 		ConfigurationClassParser parser = new ConfigurationClassParser(
 				this.metadataReaderFactory, this.problemReporter, this.environment,
 				this.resourceLoader, this.componentScanBeanNameGenerator, registry);
-		parser.parse(configCandidates);
-		parser.validate();
 
-		// Handle any @PropertySource annotations
-		List<PropertySource<?>> parsedPropertySources = parser.getPropertySources();
-		if (!parsedPropertySources.isEmpty()) {
-			if (!(this.environment instanceof ConfigurableEnvironment)) {
-				logger.warn("Ignoring @PropertySource annotations. " +
-						"Reason: Environment must implement ConfigurableEnvironment");
+		Set<ConfigurationClass> alreadyParsed = new HashSet<ConfigurationClass>(configCandidates.size());
+		do {
+			parser.parse(configCandidates);
+			parser.validate();
+
+			Set<ConfigurationClass> configClasses = new LinkedHashSet<ConfigurationClass>(parser.getConfigurationClasses());
+			configClasses.removeAll(alreadyParsed);
+
+			// Read the model and create bean definitions based on its content
+			if (this.reader == null) {
+				this.reader = new ConfigurationClassBeanDefinitionReader(registry, this.sourceExtractor,
+						this.problemReporter, this.metadataReaderFactory, this.resourceLoader, this.environment,
+						this.importBeanNameGenerator, parser.getImportRegistry());
 			}
-			else {
-				MutablePropertySources envPropertySources = ((ConfigurableEnvironment)this.environment).getPropertySources();
-				for (PropertySource<?> propertySource : parsedPropertySources) {
-					envPropertySources.addLast(propertySource);
+			this.reader.loadBeanDefinitions(configClasses);
+			alreadyParsed.addAll(configClasses);
+
+			configCandidates.clear();
+			if (registry.getBeanDefinitionCount() > candidateNames.length) {
+				String[] newCandidateNames = registry.getBeanDefinitionNames();
+				Set<String> oldCandidateNames = new HashSet<String>(Arrays.asList(candidateNames));
+				Set<String> alreadyParsedClasses = new HashSet<String>();
+				for (ConfigurationClass configurationClass : alreadyParsed) {
+					alreadyParsedClasses.add(configurationClass.getMetadata().getClassName());
 				}
+				for (String candidateName : newCandidateNames) {
+					if (!oldCandidateNames.contains(candidateName)) {
+						BeanDefinition beanDef = registry.getBeanDefinition(candidateName);
+						if (ConfigurationClassUtils.checkConfigurationClassCandidate(beanDef, this.metadataReaderFactory) &&
+								!alreadyParsedClasses.contains(beanDef.getBeanClassName())) {
+							configCandidates.add(new BeanDefinitionHolder(beanDef, candidateName));
+						}
+					}
+				}
+				candidateNames = newCandidateNames;
 			}
 		}
-
-		// Read the model and create bean definitions based on its content
-		if (this.reader == null) {
-			this.reader = new ConfigurationClassBeanDefinitionReader(registry, this.sourceExtractor,
-					this.problemReporter, this.metadataReaderFactory, this.resourceLoader, this.environment,
-					this.importBeanNameGenerator);
-		}
-
-		this.reader.loadBeanDefinitions(parser.getConfigurationClasses());
+		while (!configCandidates.isEmpty());
 
 		// Register the ImportRegistry as a bean in order to support ImportAware @Configuration classes
 		if (singletonRegistry != null) {
@@ -443,6 +460,6 @@ public class ConfigurationClassPostProcessor implements BeanDefinitionRegistryPo
 			}
 			return pvs;
 		}
-
 	}
+
 }

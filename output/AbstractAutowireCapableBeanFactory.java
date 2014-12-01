@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.BeanWrapper;
@@ -148,7 +149,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 			new ConcurrentHashMap<String, BeanWrapper>(16);
 
 	/** Cache of filtered PropertyDescriptors: bean Class -> PropertyDescriptor array */
-	private final Map<Class<?>, PropertyDescriptor[]> filteredPropertyDescriptorsCache =
+	private final ConcurrentMap<Class<?>, PropertyDescriptor[]> filteredPropertyDescriptorsCache =
 			new ConcurrentHashMap<Class<?>, PropertyDescriptor[]>(64);
 
 
@@ -286,7 +287,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 		// Use prototype bean definition, to avoid registering bean as dependent bean.
 		RootBeanDefinition bd = new RootBeanDefinition(beanClass);
 		bd.setScope(SCOPE_PROTOTYPE);
-		bd.allowCaching = false;
+		bd.allowCaching = ClassUtils.isCacheSafe(beanClass, getBeanClassLoader());
 		return (T) createBean(beanClass.getName(), bd, null);
 	}
 
@@ -295,7 +296,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 		// Use non-singleton bean definition, to avoid registering bean as dependent bean.
 		RootBeanDefinition bd = new RootBeanDefinition(ClassUtils.getUserClass(existingBean));
 		bd.setScope(BeanDefinition.SCOPE_PROTOTYPE);
-		bd.allowCaching = false;
+		bd.allowCaching = ClassUtils.isCacheSafe(bd.getBeanClass(), getBeanClassLoader());
 		BeanWrapper bw = new BeanWrapperImpl(existingBean);
 		initBeanWrapper(bw);
 		populateBean(bd.getBeanClass().getName(), bd, bw);
@@ -315,7 +316,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 				bd = new RootBeanDefinition(mbd);
 			}
 			bd.setScope(BeanDefinition.SCOPE_PROTOTYPE);
-			bd.allowCaching = false;
+			bd.allowCaching = ClassUtils.isCacheSafe(ClassUtils.getUserClass(existingBean), getBeanClassLoader());
 		}
 		BeanWrapper bw = new BeanWrapperImpl(existingBean);
 		initBeanWrapper(bw);
@@ -486,8 +487,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 	 * factory method, and autowiring a constructor.
 	 * @param beanName the name of the bean
 	 * @param mbd the merged bean definition for the bean
-	 * @param args arguments to use if creating a prototype using explicit arguments to a
-	 * static factory method. This parameter must be {@code null} except in this case.
+	 * @param args explicit arguments to use for constructor or factory method invocation
 	 * @return a new instance of the bean
 	 * @throws BeanCreationException if the bean could not be created
 	 * @see #instantiateBean
@@ -588,14 +588,8 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 
 	@Override
 	protected Class<?> predictBeanType(String beanName, RootBeanDefinition mbd, Class<?>... typesToMatch) {
-		Class<?> targetType = mbd.getTargetType();
-		if (targetType == null) {
-			targetType = (mbd.getFactoryMethodName() != null ? getTypeForFactoryMethod(beanName, mbd, typesToMatch) :
-					resolveBeanClass(mbd, beanName, typesToMatch));
-			if (ObjectUtils.isEmpty(typesToMatch) || getTempClassLoader() == null) {
-				mbd.setTargetType(targetType);
-			}
-		}
+		Class<?> targetType = determineTargetType(beanName, mbd, typesToMatch);
+
 		// Apply SmartInstantiationAwareBeanPostProcessors to predict the
 		// eventual type after a before-instantiation shortcut.
 		if (targetType != null && !mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
@@ -614,7 +608,27 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 	}
 
 	/**
-	 * Determine the bean type for the given bean definition which is based on
+	 * Determine the target type for the given bean definition.
+	 * @param beanName the name of the bean (for error handling purposes)
+	 * @param mbd the merged bean definition for the bean
+	 * @param typesToMatch the types to match in case of internal type matching purposes
+	 * (also signals that the returned {@code Class} will never be exposed to application code)
+	 * @return the type for the bean if determinable, or {@code null} otherwise
+	 */
+	protected Class<?> determineTargetType(String beanName, RootBeanDefinition mbd, Class<?>... typesToMatch) {
+		Class<?> targetType = mbd.getTargetType();
+		if (targetType == null) {
+			targetType = (mbd.getFactoryMethodName() != null ? getTypeForFactoryMethod(beanName, mbd, typesToMatch) :
+					resolveBeanClass(mbd, beanName, typesToMatch));
+			if (ObjectUtils.isEmpty(typesToMatch) || getTempClassLoader() == null) {
+				mbd.setTargetType(targetType);
+			}
+		}
+		return targetType;
+	}
+
+	/**
+	 * Determine the target type for the given bean definition which is based on
 	 * a factory method. Only called if there is no singleton instance registered
 	 * for the target bean already.
 	 * <p>This implementation determines the type matching {@link #createBean}'s
@@ -624,7 +638,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 	 * @param mbd the merged bean definition for the bean
 	 * @param typesToMatch the types to match in case of internal type matching purposes
 	 * (also signals that the returned {@code Class} will never be exposed to application code)
-	 * @return the type for the bean if determinable, or {@code null} else
+	 * @return the type for the bean if determinable, or {@code null} otherwise
 	 * @see #createBean
 	 */
 	protected Class<?> getTypeForFactoryMethod(String beanName, RootBeanDefinition mbd, Class<?>... typesToMatch) {
@@ -759,7 +773,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 									}
 								}
 							});
-					if (objectType.value != null) {
+					if (objectType.value != null && !Object.class.equals(objectType.value)) {
 						return objectType.value;
 					}
 				}
@@ -832,7 +846,8 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 			if (bw != null) {
 				return (FactoryBean<?>) bw.getWrappedInstance();
 			}
-			if (isSingletonCurrentlyInCreation(beanName)) {
+			if (isSingletonCurrentlyInCreation(beanName) ||
+					(mbd.getFactoryBeanName() != null && isSingletonCurrentlyInCreation(mbd.getFactoryBeanName()))) {
 				return null;
 			}
 			Object instance = null;
@@ -926,10 +941,13 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 		Object bean = null;
 		if (!Boolean.FALSE.equals(mbd.beforeInstantiationResolved)) {
 			// Make sure bean class is actually resolved at this point.
-			if (mbd.hasBeanClass() && !mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
-				bean = applyBeanPostProcessorsBeforeInstantiation(mbd.getBeanClass(), beanName);
-				if (bean != null) {
-					bean = applyBeanPostProcessorsAfterInitialization(bean, beanName);
+			if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+				Class<?> targetType = determineTargetType(beanName, mbd);
+				if (targetType != null) {
+					bean = applyBeanPostProcessorsBeforeInstantiation(targetType, beanName);
+					if (bean != null) {
+						bean = applyBeanPostProcessorsAfterInitialization(bean, beanName);
+					}
 				}
 			}
 			mbd.beforeInstantiationResolved = (bean != null);
@@ -969,8 +987,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 	 * factory method, constructor autowiring, or simple instantiation.
 	 * @param beanName the name of the bean
 	 * @param mbd the bean definition for the bean
-	 * @param args arguments to use if creating a prototype using explicit arguments to a
-	 * static factory method. It is invalid to use a non-null args value in any other case.
+	 * @param args explicit arguments to use for constructor or factory method invocation
 	 * @return BeanWrapper for the new instance
 	 * @see #instantiateUsingFactoryMethod
 	 * @see #autowireConstructor
@@ -1315,17 +1332,13 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 	protected PropertyDescriptor[] filterPropertyDescriptorsForDependencyCheck(BeanWrapper bw, boolean cache) {
 		PropertyDescriptor[] filtered = this.filteredPropertyDescriptorsCache.get(bw.getWrappedClass());
 		if (filtered == null) {
+			filtered = filterPropertyDescriptorsForDependencyCheck(bw);
 			if (cache) {
-				synchronized (this.filteredPropertyDescriptorsCache) {
-					filtered = this.filteredPropertyDescriptorsCache.get(bw.getWrappedClass());
-					if (filtered == null) {
-						filtered = filterPropertyDescriptorsForDependencyCheck(bw);
-						this.filteredPropertyDescriptorsCache.put(bw.getWrappedClass(), filtered);
-					}
+				PropertyDescriptor[] existing =
+						this.filteredPropertyDescriptorsCache.putIfAbsent(bw.getWrappedClass(), filtered);
+				if (existing != null) {
+					filtered = existing;
 				}
-			}
-			else {
-				filtered = filterPropertyDescriptorsForDependencyCheck(bw);
 			}
 		}
 		return filtered;
@@ -1412,7 +1425,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 		MutablePropertyValues mpvs = null;
 		List<PropertyValue> original;
 
-		if (System.getSecurityManager()!= null) {
+		if (System.getSecurityManager() != null) {
 			if (bw instanceof BeanWrapperImpl) {
 				((BeanWrapperImpl) bw).setSecurityContext(getAccessControlContext());
 			}
@@ -1709,7 +1722,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 
 
 	/**
-	 * Special DependencyDescriptor variant for autowire="byType".
+	 * Special DependencyDescriptor variant for Spring's good old autowire="byType" mode.
 	 * Always optional; never considering the parameter name for choosing a primary candidate.
 	 */
 	@SuppressWarnings("serial")

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,11 +20,14 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-
+import java.io.StringReader;
+import java.util.HashSet;
+import java.util.Set;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.stream.XMLInputFactory;
+import javax.xml.stream.XMLResolver;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 import javax.xml.transform.Result;
@@ -38,10 +41,12 @@ import javax.xml.transform.stream.StreamResult;
 import javax.xml.transform.stream.StreamSource;
 
 import org.w3c.dom.Document;
+import org.xml.sax.EntityResolver;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.XMLReaderFactory;
+
 import org.springframework.http.HttpInputMessage;
 import org.springframework.http.HttpOutputMessage;
 import org.springframework.http.MediaType;
@@ -56,13 +61,26 @@ import org.springframework.util.StreamUtils;
  * that can read and write {@link Source} objects.
  *
  * @author Arjen Poutsma
+ * @author Rossen Stoyanchev
  * @since 3.0
  */
 public class SourceHttpMessageConverter<T extends Source> extends AbstractHttpMessageConverter<T> {
 
+	private static final Set<Class<?>> SUPPORTED_CLASSES = new HashSet<Class<?>>(5);
+
+	static {
+		SUPPORTED_CLASSES.add(DOMSource.class);
+		SUPPORTED_CLASSES.add(SAXSource.class);
+		SUPPORTED_CLASSES.add(StAXSource.class);
+		SUPPORTED_CLASSES.add(StreamSource.class);
+		SUPPORTED_CLASSES.add(Source.class);
+	}
+
+
 	private final TransformerFactory transformerFactory = TransformerFactory.newInstance();
 
 	private boolean processExternalEntities = false;
+
 
 	/**
 	 * Sets the {@link #setSupportedMediaTypes(java.util.List) supportedMediaTypes}
@@ -74,18 +92,24 @@ public class SourceHttpMessageConverter<T extends Source> extends AbstractHttpMe
 
 
 	/**
-	 * Indicates whether external XML entities are processed when converting
-	 * to a Source.
+	 * Indicates whether external XML entities are processed when converting to a Source.
 	 * <p>Default is {@code false}, meaning that external entities are not resolved.
 	 */
 	public void setProcessExternalEntities(boolean processExternalEntities) {
 		this.processExternalEntities = processExternalEntities;
 	}
 
+	/**
+	 * Returns the configured value for whether XML external entities are allowed.
+	 */
+	public boolean isProcessExternalEntities() {
+		return this.processExternalEntities;
+	}
+
+
 	@Override
 	public boolean supports(Class<?> clazz) {
-		return DOMSource.class.equals(clazz) || SAXSource.class.equals(clazz)
-				|| StreamSource.class.equals(clazz) || Source.class.equals(clazz);
+		return SUPPORTED_CLASSES.contains(clazz);
 	}
 
 	@Override
@@ -108,7 +132,7 @@ public class SourceHttpMessageConverter<T extends Source> extends AbstractHttpMe
 		}
 		else {
 			throw new HttpMessageConversionException("Could not read class [" + clazz +
-					"]. Only DOMSource, SAXSource, and StreamSource are supported.");
+					"]. Only DOMSource, SAXSource, StAXSource, and StreamSource are supported.");
 		}
 	}
 
@@ -116,8 +140,12 @@ public class SourceHttpMessageConverter<T extends Source> extends AbstractHttpMe
 		try {
 			DocumentBuilderFactory documentBuilderFactory = DocumentBuilderFactory.newInstance();
 			documentBuilderFactory.setNamespaceAware(true);
-			documentBuilderFactory.setFeature("http://xml.org/sax/features/external-general-entities", processExternalEntities);
+			documentBuilderFactory.setFeature(
+					"http://xml.org/sax/features/external-general-entities", isProcessExternalEntities());
 			DocumentBuilder documentBuilder = documentBuilderFactory.newDocumentBuilder();
+			if (!isProcessExternalEntities()) {
+				documentBuilder.setEntityResolver(NO_OP_ENTITY_RESOLVER);
+			}
 			Document document = documentBuilder.parse(body);
 			return new DOMSource(document);
 		}
@@ -132,8 +160,11 @@ public class SourceHttpMessageConverter<T extends Source> extends AbstractHttpMe
 	private SAXSource readSAXSource(InputStream body) throws IOException {
 		try {
 			XMLReader reader = XMLReaderFactory.createXMLReader();
-			reader.setFeature("http://xml.org/sax/features/external-general-entities", processExternalEntities);
+			reader.setFeature("http://xml.org/sax/features/external-general-entities", isProcessExternalEntities());
 			byte[] bytes = StreamUtils.copyToByteArray(body);
+			if (!isProcessExternalEntities()) {
+				reader.setEntityResolver(NO_OP_ENTITY_RESOLVER);
+			}
 			return new SAXSource(reader, new InputSource(new ByteArrayInputStream(bytes)));
 		}
 		catch (SAXException ex) {
@@ -144,7 +175,10 @@ public class SourceHttpMessageConverter<T extends Source> extends AbstractHttpMe
 	private Source readStAXSource(InputStream body) {
 		try {
 			XMLInputFactory inputFactory = XMLInputFactory.newFactory();
-			inputFactory.setProperty("javax.xml.stream.isSupportingExternalEntities", processExternalEntities);
+			inputFactory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, isProcessExternalEntities());
+			if (!isProcessExternalEntities()) {
+				inputFactory.setXMLResolver(NO_OP_XML_RESOLVER);
+			}
 			XMLStreamReader streamReader = inputFactory.createXMLStreamReader(body);
 			return new StAXSource(streamReader);
 		}
@@ -192,22 +226,37 @@ public class SourceHttpMessageConverter<T extends Source> extends AbstractHttpMe
 
 	private static class CountingOutputStream extends OutputStream {
 
-		private long count = 0;
+		long count = 0;
 
 		@Override
 		public void write(int b) throws IOException {
-			count++;
+			this.count++;
 		}
 
 		@Override
 		public void write(byte[] b) throws IOException {
-			count += b.length;
+			this.count += b.length;
 		}
 
 		@Override
 		public void write(byte[] b, int off, int len) throws IOException {
-			count += len;
+			this.count += len;
 		}
 	}
+
+
+	private static final EntityResolver NO_OP_ENTITY_RESOLVER = new EntityResolver() {
+		@Override
+		public InputSource resolveEntity(String publicId, String systemId) {
+			return new InputSource(new StringReader(""));
+		}
+	};
+
+	private static final XMLResolver NO_OP_XML_RESOLVER = new XMLResolver() {
+		@Override
+		public Object resolveEntity(String publicID, String systemID, String base, String ns) {
+			return new ByteArrayInputStream(new byte[0]);
+		}
+	};
 
 }

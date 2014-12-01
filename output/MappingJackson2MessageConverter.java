@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,19 +26,28 @@ import java.util.concurrent.atomic.AtomicReference;
 import com.fasterxml.jackson.core.JsonEncoding;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.util.DefaultPrettyPrinter;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageHeaders;
+import org.springframework.util.Assert;
 import org.springframework.util.ClassUtils;
 import org.springframework.util.MimeType;
 
 /**
  * A Jackson 2 based {@link MessageConverter} implementation.
  *
- * <p>Tested against Jackson 2.2 and 2.3; compatible with Jackson 2.0 and higher.
+ * <p>It customizes Jackson's default properties with the following ones:
+ * <ul>
+ * <li>{@link MapperFeature#DEFAULT_VIEW_INCLUSION} is disabled</li>
+ * <li>{@link DeserializationFeature#FAIL_ON_UNKNOWN_PROPERTIES} is disabled</li>
+ * </ul>
+ *
+ * <p>Compatible with Jackson 2.1 and higher.
  *
  * @author Rossen Stoyanchev
  * @author Juergen Hoeller
@@ -51,15 +60,41 @@ public class MappingJackson2MessageConverter extends AbstractMessageConverter {
 			ClassUtils.hasMethod(ObjectMapper.class, "canDeserialize", JavaType.class, AtomicReference.class);
 
 
-	private ObjectMapper objectMapper = new ObjectMapper();
+	private ObjectMapper objectMapper;
 
 	private Boolean prettyPrint;
 
 
 	public MappingJackson2MessageConverter() {
 		super(new MimeType("application", "json", Charset.forName("UTF-8")));
+		this.objectMapper = new ObjectMapper();
+		this.objectMapper.configure(MapperFeature.DEFAULT_VIEW_INCLUSION, false);
+		this.objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 	}
 
+	/**
+	 * Set the {@code ObjectMapper} for this converter.
+	 * If not set, a default {@link ObjectMapper#ObjectMapper() ObjectMapper} is used.
+	 * <p>Setting a custom-configured {@code ObjectMapper} is one way to take further
+	 * control of the JSON serialization process. For example, an extended
+	 * {@link com.fasterxml.jackson.databind.ser.SerializerFactory} can be
+	 * configured that provides custom serializers for specific types. The other
+	 * option for refining the serialization process is to use Jackson's provided
+	 * annotations on the types to be serialized, in which case a custom-configured
+	 * ObjectMapper is unnecessary.
+	 */
+	public void setObjectMapper(ObjectMapper objectMapper) {
+		Assert.notNull(objectMapper, "ObjectMapper must not be null");
+		this.objectMapper = objectMapper;
+		configurePrettyPrint();
+	}
+
+	/**
+	 * Return the underlying {@code ObjectMapper} for this converter.
+	 */
+	public ObjectMapper getObjectMapper() {
+		return this.objectMapper;
+	}
 
 	/**
 	 * Whether to use the {@link DefaultPrettyPrinter} when writing JSON.
@@ -96,7 +131,13 @@ public class MappingJackson2MessageConverter extends AbstractMessageConverter {
 		}
 		Throwable cause = causeRef.get();
 		if (cause != null) {
-			logger.warn("Failed to evaluate deserialization for type: " + javaType);
+			String msg = "Failed to evaluate deserialization for type " + javaType;
+			if (logger.isDebugEnabled()) {
+				logger.warn(msg, cause);
+			}
+			else {
+				logger.warn(msg + ": " + cause);
+			}
 		}
 		return false;
 	}
@@ -112,7 +153,13 @@ public class MappingJackson2MessageConverter extends AbstractMessageConverter {
 		}
 		Throwable cause = causeRef.get();
 		if (cause != null) {
-			logger.warn("Failed to evaluate serialization for type: " + payload.getClass());
+			String msg = "Failed to evaluate serialization for type [" + payload.getClass() + "]";
+			if (logger.isDebugEnabled()) {
+				logger.warn(msg, cause);
+			}
+			else {
+				logger.warn(msg + ": " + cause);
+			}
 		}
 		return false;
 	}
@@ -144,20 +191,9 @@ public class MappingJackson2MessageConverter extends AbstractMessageConverter {
 	public Object convertToInternal(Object payload, MessageHeaders headers) {
 		try {
 			if (byte[].class.equals(getSerializedPayloadClass())) {
-				ByteArrayOutputStream out = new ByteArrayOutputStream();
+				ByteArrayOutputStream out = new ByteArrayOutputStream(1024);
 				JsonEncoding encoding = getJsonEncoding(getMimeType(headers));
-
-				// The following has been deprecated as late as Jackson 2.2 (April 2013);
-				// preserved for the time being, for Jackson 2.0/2.1 compatibility.
-				@SuppressWarnings("deprecation")
-				JsonGenerator generator = this.objectMapper.getJsonFactory().createJsonGenerator(out, encoding);
-
-				// A workaround for JsonGenerators not applying serialization features
-				// https://github.com/FasterXML/jackson-databind/issues/12
-				if (this.objectMapper.isEnabled(SerializationFeature.INDENT_OUTPUT)) {
-					generator.useDefaultPrettyPrinter();
-				}
-
+				JsonGenerator generator = this.objectMapper.getFactory().createGenerator(out, encoding);
 				this.objectMapper.writeValue(generator, payload);
 				payload = out.toByteArray();
 			}

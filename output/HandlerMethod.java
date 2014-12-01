@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,15 +30,13 @@ import org.springframework.util.Assert;
 import org.springframework.util.ClassUtils;
 
 /**
- * Encapsulates information about a bean method consisting of a
- * {@linkplain #getMethod() method} and a {@linkplain #getBean() bean}. Provides
- * convenient access to method parameters, the method return value, method
- * annotations.
+ * Encapsulates information about a bean method consisting of a {@link #getMethod() method}
+ * and a {@link #getBean() bean}. Provides convenient access to method parameters,
+ * method return value, method annotations.
  *
- * <p>The class may be created with a bean instance or with a bean name (e.g. lazy
- * bean, prototype bean). Use {@link #createWithResolvedBean()} to obtain an
- * {@link HandlerMethod} instance with a bean instance initialized through the
- * bean factory.
+ * <p>The class may be created with a bean instance or with a bean name (e.g. lazy bean,
+ * prototype bean). Use {@link #createWithResolvedBean()} to obtain an {@link HandlerMethod}
+ * instance with a bean instance initialized through the bean factory.
  *
  * @author Arjen Poutsma
  * @author Rossen Stoyanchev
@@ -46,26 +44,25 @@ import org.springframework.util.ClassUtils;
  */
 public class HandlerMethod {
 
-	/** Logger that is available to subclasses */
 	protected final Log logger = LogFactory.getLog(HandlerMethod.class);
 
 	private final Object bean;
 
-	private final Method method;
-
 	private final BeanFactory beanFactory;
 
-	private final MethodParameter[] parameters;
+	private final Method method;
 
 	private final Method bridgedMethod;
+
+	private final MethodParameter[] parameters;
 
 
 	/**
 	 * Create an instance from a bean instance and a method.
 	 */
 	public HandlerMethod(Object bean, Method method) {
-		Assert.notNull(bean, "bean must not be null");
-		Assert.notNull(method, "method must not be null");
+		Assert.notNull(bean, "Bean is required");
+		Assert.notNull(method, "Method is required");
 		this.bean = bean;
 		this.beanFactory = null;
 		this.method = method;
@@ -78,12 +75,12 @@ public class HandlerMethod {
 	 * @throws NoSuchMethodException when the method cannot be found
 	 */
 	public HandlerMethod(Object bean, String methodName, Class<?>... parameterTypes) throws NoSuchMethodException {
-		Assert.notNull(bean, "bean must not be null");
-		Assert.notNull(methodName, "method must not be null");
+		Assert.notNull(bean, "Bean is required");
+		Assert.notNull(methodName, "Method name is required");
 		this.bean = bean;
 		this.beanFactory = null;
 		this.method = bean.getClass().getMethod(methodName, parameterTypes);
-		this.bridgedMethod = BridgeMethodResolver.findBridgedMethod(method);
+		this.bridgedMethod = BridgeMethodResolver.findBridgedMethod(this.method);
 		this.parameters = initMethodParameters();
 	}
 
@@ -93,11 +90,11 @@ public class HandlerMethod {
 	 * re-create the {@code HandlerMethod} with an initialized the bean.
 	 */
 	public HandlerMethod(String beanName, BeanFactory beanFactory, Method method) {
-		Assert.hasText(beanName, "beanName must not be null");
-		Assert.notNull(beanFactory, "beanFactory must not be null");
-		Assert.notNull(method, "method must not be null");
+		Assert.hasText(beanName, "Bean name is required");
+		Assert.notNull(beanFactory, "BeanFactory is required");
+		Assert.notNull(method, "Method is required");
 		Assert.isTrue(beanFactory.containsBean(beanName),
-				"Bean factory [" + beanFactory + "] does not contain bean [" + beanName + "]");
+				"BeanFactory [" + beanFactory + "] does not contain bean [" + beanName + "]");
 		this.bean = beanName;
 		this.beanFactory = beanFactory;
 		this.method = method;
@@ -109,7 +106,7 @@ public class HandlerMethod {
 	 * Copy constructor for use in sub-classes.
 	 */
 	protected HandlerMethod(HandlerMethod handlerMethod) {
-		Assert.notNull(handlerMethod, "HandlerMethod must not be null");
+		Assert.notNull(handlerMethod, "HandlerMethod is required");
 		this.bean = handlerMethod.bean;
 		this.beanFactory = handlerMethod.beanFactory;
 		this.method = handlerMethod.method;
@@ -121,8 +118,8 @@ public class HandlerMethod {
 	 * Re-create HandlerMethod with the resolved handler.
 	 */
 	private HandlerMethod(HandlerMethod handlerMethod, Object handler) {
-		Assert.notNull(handlerMethod, "handlerMethod must not be null");
-		Assert.notNull(handler, "handler must not be null");
+		Assert.notNull(handlerMethod, "HandlerMethod is required");
+		Assert.notNull(handler, "Handler object is required");
 		this.bean = handler;
 		this.beanFactory = handlerMethod.beanFactory;
 		this.method = handlerMethod.method;
@@ -238,6 +235,11 @@ public class HandlerMethod {
 	@Override
 	public int hashCode() {
 		return this.bean.hashCode() * 31 + this.method.hashCode();
+	}
+
+	public String getShortLogMessage() {
+		int args = method.getParameterTypes().length;
+		return getBeanType().getName() + "#" + this.method.getName() + "[" + args + " args]";
 	}
 
 	@Override

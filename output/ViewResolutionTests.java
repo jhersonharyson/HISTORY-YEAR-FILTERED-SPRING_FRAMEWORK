@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2012 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,21 +16,11 @@
 
 package org.springframework.test.web.servlet.samples.standalone;
 
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.hasProperty;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.xpath;
-import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup;
-
 import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.Test;
+
 import org.springframework.http.MediaType;
 import org.springframework.oxm.jaxb.Jaxb2Marshaller;
 import org.springframework.stereotype.Controller;
@@ -46,8 +36,13 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.servlet.View;
 import org.springframework.web.servlet.view.ContentNegotiatingViewResolver;
 import org.springframework.web.servlet.view.InternalResourceViewResolver;
-import org.springframework.web.servlet.view.json.MappingJacksonJsonView;
+import org.springframework.web.servlet.view.json.MappingJackson2JsonView;
 import org.springframework.web.servlet.view.xml.MarshallingView;
+
+import static org.hamcrest.Matchers.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.springframework.test.web.servlet.setup.MockMvcBuilders.*;
 
 /**
  * Tests with view resolution.
@@ -74,7 +69,7 @@ public class ViewResolutionTests {
 	@Test
 	public void testJsonOnly() throws Exception {
 
-		standaloneSetup(new PersonController()).setSingleView(new MappingJacksonJsonView()).build()
+		standaloneSetup(new PersonController()).setSingleView(new MappingJackson2JsonView()).build()
 			.perform(get("/person/Corea"))
 				.andExpect(status().isOk())
 				.andExpect(content().contentType(MediaType.APPLICATION_JSON))
@@ -101,7 +96,7 @@ public class ViewResolutionTests {
 		marshaller.setClassesToBeBound(Person.class);
 
 		List<View> viewList = new ArrayList<View>();
-		viewList.add(new MappingJacksonJsonView());
+		viewList.add(new MappingJackson2JsonView());
 		viewList.add(new MarshallingView(marshaller));
 
 		ContentNegotiationManager manager = new ContentNegotiationManager(

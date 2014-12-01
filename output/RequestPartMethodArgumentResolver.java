@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,8 +20,8 @@ import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-
 import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.Part;
 
 import org.springframework.core.GenericCollectionTypeResolver;
 import org.springframework.core.MethodParameter;
@@ -31,6 +31,7 @@ import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.util.Assert;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.Errors;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -51,18 +52,15 @@ import org.springframework.web.util.WebUtils;
 /**
  * Resolves the following method arguments:
  * <ul>
- * 	<li>Annotated with {@code @RequestPart}
- * 	<li>Of type {@link MultipartFile} in conjunction with Spring's
- *  {@link MultipartResolver} abstraction
- * 	<li>Of type {@code javax.servlet.http.Part} in conjunction with
- * 	Servlet 3.0 multipart requests
+ * <li>Annotated with {@code @RequestPart}
+ * <li>Of type {@link MultipartFile} in conjunction with Spring's {@link MultipartResolver} abstraction
+ * <li>Of type {@code javax.servlet.http.Part} in conjunction with Servlet 3.0 multipart requests
  * </ul>
  *
- * <p>When a parameter is annotated with {@code @RequestPart} the content of the
- * part is passed through an {@link HttpMessageConverter} to resolve the method
- * argument with the 'Content-Type' of the request part in mind. This is
- * analogous to what @{@link RequestBody} does to resolve an argument based on
- * the content of a regular request.
+ * <p>When a parameter is annotated with {@code @RequestPart}, the content of the part is
+ * passed through an {@link HttpMessageConverter} to resolve the method argument with the
+ * 'Content-Type' of the request part in mind. This is analogous to what @{@link RequestBody}
+ * does to resolve an argument based on the content of a regular request.
  *
  * <p>When a parameter is not annotated or the name of the part is not specified,
  * it is derived from the name of the method argument.
@@ -73,6 +71,7 @@ import org.springframework.web.util.WebUtils;
  * code returned if {@link DefaultHandlerExceptionResolver} is configured.
  *
  * @author Rossen Stoyanchev
+ * @author Brian Clozel
  * @since 3.1
  */
 public class RequestPartMethodArgumentResolver extends AbstractMessageConverterMethodArgumentResolver {
@@ -131,6 +130,11 @@ public class RequestPartMethodArgumentResolver extends AbstractMessageConverterM
 			Assert.notNull(multipartRequest, "Expected MultipartHttpServletRequest: is a MultipartResolver configured?");
 			arg = multipartRequest.getFiles(partName);
 		}
+		else if (isMultipartFileArray(parameter)) {
+			Assert.notNull(multipartRequest, "Expected MultipartHttpServletRequest: is a MultipartResolver configured?");
+			List<MultipartFile> files = multipartRequest.getFiles(partName);
+			arg = files.toArray(new MultipartFile[files.size()]);
+		}
 		else if ("javax.servlet.http.Part".equals(parameter.getParameterType().getName())) {
 			assertIsMultipartRequest(servletRequest);
 			arg = servletRequest.getPart(partName);
@@ -138,6 +142,10 @@ public class RequestPartMethodArgumentResolver extends AbstractMessageConverterM
 		else if (isPartCollection(parameter)) {
 			assertIsMultipartRequest(servletRequest);
 			arg = new ArrayList<Object>(servletRequest.getParts());
+		}
+		else if (isPartArray(parameter)) {
+			assertIsMultipartRequest(servletRequest);
+			arg = RequestPartResolver.resolvePart(servletRequest);
 		}
 		else {
 			try {
@@ -174,23 +182,33 @@ public class RequestPartMethodArgumentResolver extends AbstractMessageConverterM
 
 	private String getPartName(MethodParameter parameter) {
 		RequestPart annot = parameter.getParameterAnnotation(RequestPart.class);
-		String partName = (annot != null) ? annot.value() : "";
+		String partName = (annot != null ? annot.value() : "");
 		if (partName.length() == 0) {
 			partName = parameter.getParameterName();
-			Assert.notNull(partName, "Request part name for argument type [" + parameter.getParameterType().getName()
-					+ "] not available, and parameter name information not found in class file either.");
+			Assert.notNull(partName, "Request part name for argument type [" + parameter.getParameterType().getName() +
+					"] not specified, and parameter name information not found in class file either.");
 		}
 		return partName;
 	}
 
 	private boolean isMultipartFileCollection(MethodParameter parameter) {
 		Class<?> collectionType = getCollectionParameterType(parameter);
-		return ((collectionType != null) && collectionType.equals(MultipartFile.class));
+		return (collectionType != null && collectionType.equals(MultipartFile.class));
+	}
+
+	private boolean isMultipartFileArray(MethodParameter parameter) {
+		Class<?> paramType = parameter.getParameterType().getComponentType();
+		return (paramType != null && MultipartFile.class.equals(paramType));
 	}
 
 	private boolean isPartCollection(MethodParameter parameter) {
 		Class<?> collectionType = getCollectionParameterType(parameter);
-		return ((collectionType != null) && "javax.servlet.http.Part".equals(collectionType.getName()));
+		return (collectionType != null && "javax.servlet.http.Part".equals(collectionType.getName()));
+	}
+
+	private boolean isPartArray(MethodParameter parameter) {
+		Class<?> paramType = parameter.getParameterType().getComponentType();
+		return (paramType != null && "javax.servlet.http.Part".equals(paramType.getName()));
 	}
 
 	private Class<?> getCollectionParameterType(MethodParameter parameter) {
@@ -205,15 +223,16 @@ public class RequestPartMethodArgumentResolver extends AbstractMessageConverterM
 	}
 
 	private void validate(WebDataBinder binder, MethodParameter parameter) throws MethodArgumentNotValidException {
-
 		Annotation[] annotations = parameter.getParameterAnnotations();
-		for (Annotation annot : annotations) {
-			if (annot.annotationType().getSimpleName().startsWith("Valid")) {
-				Object hints = AnnotationUtils.getValue(annot);
-				binder.validate(hints instanceof Object[] ? (Object[]) hints : new Object[] {hints});
+		for (Annotation ann : annotations) {
+			Validated validatedAnn = AnnotationUtils.getAnnotation(ann, Validated.class);
+			if (validatedAnn != null || ann.annotationType().getSimpleName().startsWith("Valid")) {
+				Object hints = (validatedAnn != null ? validatedAnn.value() : AnnotationUtils.getValue(ann));
+				Object[] validationHints = (hints instanceof Object[] ? (Object[]) hints : new Object[] {hints});
+				binder.validate(validationHints);
 				BindingResult bindingResult = binder.getBindingResult();
 				if (bindingResult.hasErrors()) {
-					if (isBindExceptionRequired(binder, parameter)) {
+					if (isBindingErrorFatal(parameter)) {
 						throw new MethodArgumentNotValidException(parameter, bindingResult);
 					}
 				}
@@ -223,16 +242,26 @@ public class RequestPartMethodArgumentResolver extends AbstractMessageConverterM
 
 	/**
 	 * Whether to raise a {@link MethodArgumentNotValidException} on validation errors.
-	 * @param binder the data binder used to perform data binding
 	 * @param parameter the method argument
-	 * @return {@code true} if the next method argument is not of type {@link Errors}.
+	 * @return {@code true} if the next method argument is not of type {@link Errors}
 	 */
-	private boolean isBindExceptionRequired(WebDataBinder binder, MethodParameter parameter) {
+	private boolean isBindingErrorFatal(MethodParameter parameter) {
 		int i = parameter.getParameterIndex();
 		Class<?>[] paramTypes = parameter.getMethod().getParameterTypes();
 		boolean hasBindingResult = (paramTypes.length > (i + 1) && Errors.class.isAssignableFrom(paramTypes[i + 1]));
-
 		return !hasBindingResult;
+	}
+
+
+	/**
+	 * Inner class to avoid hard-coded dependency on Servlet 3.0 Part type...
+	 */
+	private static class RequestPartResolver {
+
+		public static Object resolvePart(HttpServletRequest servletRequest) throws Exception {
+			Collection<Part> parts = servletRequest.getParts();
+			return parts.toArray(new Part[parts.size()]);
+		}
 	}
 
 }

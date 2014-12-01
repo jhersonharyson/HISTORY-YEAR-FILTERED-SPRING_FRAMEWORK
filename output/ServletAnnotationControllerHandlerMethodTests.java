@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,8 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.lang.reflect.Method;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.security.Principal;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -40,7 +42,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-
 import javax.servlet.ServletConfig;
 import javax.servlet.ServletContext;
 import javax.servlet.ServletException;
@@ -53,6 +54,7 @@ import javax.validation.constraints.NotNull;
 import javax.xml.bind.annotation.XmlRootElement;
 
 import org.junit.Test;
+
 import org.springframework.aop.framework.autoproxy.DefaultAdvisorAutoProxyCreator;
 import org.springframework.aop.interceptor.SimpleTraceInterceptor;
 import org.springframework.aop.support.DefaultPointcutAdvisor;
@@ -1566,7 +1568,6 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 
 	@Test
 	public void restController() throws Exception {
-
 		initServletWithControllers(ThisWillActuallyRun.class);
 
 		MockHttpServletRequest request = new MockHttpServletRequest("GET", "/");
@@ -1575,6 +1576,28 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		assertEquals("Hello World!", response.getContentAsString());
 	}
 
+	@Test
+	public void responseAsHttpHeaders() throws Exception {
+		initServletWithControllers(HttpHeadersResponseController.class);
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(new MockHttpServletRequest("POST", "/"), response);
+
+		assertEquals("Wrong status code", MockHttpServletResponse.SC_CREATED, response.getStatus());
+		assertEquals("Wrong number of headers", 1, response.getHeaderNames().size());
+		assertEquals("Wrong value for 'location' header", "/test/items/123", response.getHeader("location"));
+		assertEquals("Expected an empty content", 0, response.getContentLength());
+	}
+
+	@Test
+	public void responseAsHttpHeadersNoHeader() throws Exception {
+		initServletWithControllers(HttpHeadersResponseController.class);
+		MockHttpServletResponse response = new MockHttpServletResponse();
+		getServlet().service(new MockHttpServletRequest("POST", "/empty"), response);
+
+		assertEquals("Wrong status code", MockHttpServletResponse.SC_CREATED, response.getStatus());
+		assertEquals("Wrong number of headers", 0, response.getHeaderNames().size());
+		assertEquals("Expected an empty content", 0, response.getContentLength());
+	}
 
 	/*
 	 * Controllers
@@ -2995,8 +3018,27 @@ public class ServletAnnotationControllerHandlerMethodTests extends AbstractServl
 		}
 	}
 
+	@Controller
+	static class HttpHeadersResponseController {
 
-// Test cases deleted from the original SevletAnnotationControllerTests:
+		@RequestMapping(value = "", method = RequestMethod.POST)
+		@ResponseStatus(HttpStatus.CREATED)
+		public HttpHeaders create() throws URISyntaxException {
+			HttpHeaders headers = new HttpHeaders();
+			headers.setLocation(new URI("/test/items/123"));
+			return headers;
+		}
+
+		@RequestMapping(value = "empty", method = RequestMethod.POST)
+		@ResponseStatus(HttpStatus.CREATED)
+		public HttpHeaders createNoHeader() throws URISyntaxException {
+			return new HttpHeaders();
+		}
+
+	}
+
+
+// Test cases deleted from the original ServletAnnotationControllerTests:
 
 //	@Ignore("Controller interface => no method-level @RequestMapping annotation")
 //	public void standardHandleMethod() throws Exception {

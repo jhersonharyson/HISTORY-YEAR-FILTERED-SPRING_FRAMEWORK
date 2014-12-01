@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -27,6 +27,7 @@ import org.apache.commons.logging.LogFactory;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageHeaders;
 import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.util.Assert;
 import org.springframework.util.MimeType;
 
@@ -43,23 +44,27 @@ public abstract class AbstractMessageConverter implements MessageConverter {
 
 	protected final Log logger = LogFactory.getLog(getClass());
 
+
 	private final List<MimeType> supportedMimeTypes;
+
+	private ContentTypeResolver contentTypeResolver = new DefaultContentTypeResolver();
+
+	private boolean strictContentTypeMatch = false;
 
 	private Class<?> serializedPayloadClass = byte[].class;
 
-	private ContentTypeResolver contentTypeResolver;
-
 
 	/**
-	 * Construct an {@code AbstractMessageConverter} with one supported MIME type.
+	 * Construct an {@code AbstractMessageConverter} supporting a single MIME type.
 	 * @param supportedMimeType the supported MIME type
 	 */
 	protected AbstractMessageConverter(MimeType supportedMimeType) {
+		Assert.notNull(supportedMimeType, "supportedMimeType is required");
 		this.supportedMimeTypes = Collections.<MimeType>singletonList(supportedMimeType);
 	}
 
 	/**
-	 * Construct an {@code AbstractMessageConverter} with multiple supported MIME type.
+	 * Construct an {@code AbstractMessageConverter} supporting multiple MIME types.
 	 * @param supportedMimeTypes the supported MIME types
 	 */
 	protected AbstractMessageConverter(Collection<MimeType> supportedMimeTypes) {
@@ -69,26 +74,62 @@ public abstract class AbstractMessageConverter implements MessageConverter {
 
 
 	/**
-	 * Return the configured supported MIME types.
+	 * Return the supported MIME types.
 	 */
 	public List<MimeType> getSupportedMimeTypes() {
 		return Collections.unmodifiableList(this.supportedMimeTypes);
 	}
 
 	/**
-	 * Configure the {@link ContentTypeResolver} to use.
-	 * <p>The default value is {@code null}. However when {@link CompositeMessageConverter}
-	 * is used it configures all of its delegates with a default resolver.
+	 * Configure the {@link ContentTypeResolver} to use to resolve the content
+	 * type of an input message.
+	 * <p>
+	 * Note that if no resolver is configured, then
+	 * {@link #setStrictContentTypeMatch(boolean) strictContentTypeMatch} should
+	 * be left as {@code false} (the default) or otherwise this converter will
+	 * ignore all messages.
+	 * <p>
+	 * By default, a {@code DefaultContentTypeResolver} instance is used.
 	 */
 	public void setContentTypeResolver(ContentTypeResolver resolver) {
 		this.contentTypeResolver = resolver;
 	}
 
 	/**
-	 * Return the default {@link ContentTypeResolver}.
+	 * Return the configured {@link ContentTypeResolver}.
 	 */
 	public ContentTypeResolver getContentTypeResolver() {
 		return this.contentTypeResolver;
+	}
+
+	/**
+	 * Whether this converter should convert messages for which no content type
+	 * could be resolved through the configured
+	 * {@link org.springframework.messaging.converter.ContentTypeResolver}.
+	 * A converter can configured to be strict only when a
+	 * {@link #setContentTypeResolver(ContentTypeResolver) contentTypeResolver}
+	 * is  configured and the list of {@link #getSupportedMimeTypes() supportedMimeTypes}
+	 * is not be empty.
+	 *
+	 * then requires the content type of a message to be resolved
+	 *
+	 * When set to true, #supportsMimeType(MessageHeaders) will return false if the
+	 * contentTypeResolver is not defined or if no content-type header is present.
+	 */
+	public void setStrictContentTypeMatch(boolean strictContentTypeMatch) {
+		if (strictContentTypeMatch) {
+			Assert.notEmpty(getSupportedMimeTypes(), "Strict match requires non-empty list of supported mime types.");
+			Assert.notNull(getContentTypeResolver(), "Strict match requires ContentTypeResolver.");
+		}
+		this.strictContentTypeMatch = strictContentTypeMatch;
+	}
+
+	/**
+	 * Whether content type resolution must produce a value that matches one of
+	 * the supported MIME types.
+	 */
+	public boolean isStrictContentTypeMatch() {
+		return this.strictContentTypeMatch;
 	}
 
 	/**
@@ -109,6 +150,7 @@ public abstract class AbstractMessageConverter implements MessageConverter {
 	public Class<?> getSerializedPayloadClass() {
 		return this.serializedPayloadClass;
 	}
+
 
 	/**
 	 * Returns the default content type for the payload. Called when
@@ -151,18 +193,27 @@ public abstract class AbstractMessageConverter implements MessageConverter {
 
 	@Override
 	public final Message<?> toMessage(Object payload, MessageHeaders headers) {
+
 		if (!canConvertTo(payload, headers)) {
 			return null;
 		}
+
 		payload = convertToInternal(payload, headers);
+		MimeType mimeType = getDefaultContentType(payload);
+
+		if (headers != null) {
+			MessageHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(headers, MessageHeaderAccessor.class);
+			if (accessor != null && accessor.isMutable()) {
+				accessor.setHeaderIfAbsent(MessageHeaders.CONTENT_TYPE, mimeType);
+				return MessageBuilder.createMessage(payload, accessor.getMessageHeaders());
+			}
+		}
+
 		MessageBuilder<?> builder = MessageBuilder.withPayload(payload);
 		if (headers != null) {
 			builder.copyHeaders(headers);
 		}
-		MimeType mimeType = getDefaultContentType(payload);
-		if (mimeType != null) {
-			builder.setHeaderIfAbsent(MessageHeaders.CONTENT_TYPE, mimeType);
-		}
+		builder.setHeaderIfAbsent(MessageHeaders.CONTENT_TYPE, mimeType);
 		return builder.build();
 	}
 
@@ -177,16 +228,20 @@ public abstract class AbstractMessageConverter implements MessageConverter {
 	public abstract Object convertToInternal(Object payload, MessageHeaders headers);
 
 	protected boolean supportsMimeType(MessageHeaders headers) {
-		MimeType mimeType = getMimeType(headers);
-		if (mimeType == null) {
-			return true;
-		}
 		if (getSupportedMimeTypes().isEmpty()) {
 			return true;
 		}
-		for (MimeType supported : getSupportedMimeTypes()) {
-			if (supported.getType().equals(mimeType.getType()) &&
-					supported.getSubtype().equals(mimeType.getSubtype())) {
+		MimeType mimeType = getMimeType(headers);
+		if (mimeType == null) {
+			if (isStrictContentTypeMatch()) {
+				return false;
+			}
+			else {
+				return true;
+			}
+		}
+		for (MimeType current : getSupportedMimeTypes()) {
+			if (current.getType().equals(mimeType.getType()) && current.getSubtype().equals(mimeType.getSubtype())) {
 				return true;
 			}
 		}

@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,6 +19,7 @@ package org.springframework.web.servlet.mvc.method.annotation;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import javax.servlet.http.HttpServletRequest;
 
@@ -29,6 +30,8 @@ import org.apache.commons.logging.LogFactory;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.aop.target.EmptyTargetSource;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
+import org.springframework.beans.factory.NoUniqueBeanDefinitionException;
+import org.springframework.cglib.core.SpringNamingPolicy;
 import org.springframework.cglib.proxy.Callback;
 import org.springframework.cglib.proxy.Enhancer;
 import org.springframework.cglib.proxy.Factory;
@@ -49,9 +52,11 @@ import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.method.annotation.RequestParamMethodArgumentResolver;
 import org.springframework.web.method.support.CompositeUriComponentsContributor;
 import org.springframework.web.servlet.DispatcherServlet;
+import org.springframework.web.servlet.mvc.method.RequestMappingInfoHandlerMapping;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 import org.springframework.web.util.UriComponents;
 import org.springframework.web.util.UriComponentsBuilder;
@@ -72,16 +77,15 @@ public class MvcUriComponentsBuilder extends UriComponentsBuilder {
 	public static final String MVC_URI_COMPONENTS_CONTRIBUTOR_BEAN_NAME = "mvcUriComponentsContributor";
 
 
-	private static final CompositeUriComponentsContributor defaultUriComponentsContributor;
+	private static final Log logger = LogFactory.getLog(MvcUriComponentsBuilder.class);
+
+	private static final ObjenesisStd objenesis = new ObjenesisStd(true);
 
 	private static final PathMatcher pathMatcher = new AntPathMatcher();
 
 	private static final ParameterNameDiscoverer parameterNameDiscoverer = new DefaultParameterNameDiscoverer();
 
-	private static final ObjenesisStd objenesis = new ObjenesisStd(true);
-
-	private static final Log logger = LogFactory.getLog(MvcUriComponentsBuilder.class);
-
+	private static final CompositeUriComponentsContributor defaultUriComponentsContributor;
 
 	static {
 		defaultUriComponentsContributor = new CompositeUriComponentsContributor(
@@ -90,40 +94,71 @@ public class MvcUriComponentsBuilder extends UriComponentsBuilder {
 
 
 	/**
-	 * Create a {@link UriComponentsBuilder} by pointing to a controller class. The
-	 * resulting builder contains the current request information up to and including
-	 * the Servlet mapping plus any type-level request mapping. If the controller
-	 * contains multiple mappings, the first one is used.
-	 * @param controllerType the controller to create a URI for
-	 * @return a UriComponentsBuilder instance
+	 * Default constructor. Protected to prevent direct instantiation.
+	 *
+	 * @see #fromController(Class)
+	 * @see #fromMethodName(Class, String, Object...)
+	 * @see #fromMethodCall(Object)
+	 * @see #fromMappingName(String)
+	 * @see #fromMethod(java.lang.reflect.Method, Object...)
+	 */
+	protected MvcUriComponentsBuilder() {
+	}
+
+	/**
+	 * Create a deep copy of the given MvcUriComponentsBuilder.
+	 * @param other the other builder to copy from
+	 */
+	protected MvcUriComponentsBuilder(MvcUriComponentsBuilder other) {
+		super(other);
+	}
+
+	/**
+	 * Create a {@link UriComponentsBuilder} from the mapping of a controller class
+	 * and current request information including Servlet mapping. If the controller
+	 * contains multiple mappings, only the first one is used.
+	 * @param controllerType the controller to build a URI for
+	 * @return a UriComponentsBuilder instance (never {@code null})
 	 */
 	public static UriComponentsBuilder fromController(Class<?> controllerType) {
 		String mapping = getTypeRequestMapping(controllerType);
 		return ServletUriComponentsBuilder.fromCurrentServletMapping().path(mapping);
 	}
 
+	private static String getTypeRequestMapping(Class<?> controllerType) {
+		Assert.notNull(controllerType, "'controllerType' must not be null");
+		RequestMapping annot = AnnotationUtils.findAnnotation(controllerType, RequestMapping.class);
+		if (annot == null || ObjectUtils.isEmpty(annot.value()) || StringUtils.isEmpty(annot.value()[0])) {
+			return "/";
+		}
+		if (annot.value().length > 1 && logger.isWarnEnabled()) {
+			logger.warn("Multiple paths on controller " + controllerType.getName() + ", using first one");
+		}
+		return annot.value()[0];
+	}
+
 	/**
-	 * Create a {@link UriComponentsBuilder} by pointing to a controller method and
-	 * providing method argument values. The method is matched based on the provided
-	 * method name and the number of argument values. If that results in a clash
-	 * (i.e. overloaded methods with the same number of parameters), use
-	 * {@link #fromMethod(java.lang.reflect.Method, Object...)} instead.
-	 * <p>The argument values are used to prepare the URI for example expanding
-	 * path variables, or adding query parameters. Any other arguments not
-	 * relevant to the URI can be provided as {@literal null} and will be ignored.
-	 * <p>Additional (custom) argument types can be supported through an implementation
-	 * of {@link org.springframework.web.method.support.UriComponentsContributor}.
-	 * @param controllerType the target controller type
-	 * @param methodName the target method name
-	 * @param argumentValues argument values matching to method parameters
-	 * @return a UriComponentsBuilder instance
+	 * Create a {@link UriComponentsBuilder} from the mapping of a controller
+	 * method and an array of method argument values. This method delegates
+	 * to {@link #fromMethod(java.lang.reflect.Method, Object...)}.
+	 * @param controllerType the controller
+	 * @param methodName the method name
+	 * @param argumentValues the argument values
+	 * @return a UriComponentsBuilder instance, never {@code null}
+	 * @throws IllegalArgumentException if there is no matching or
+	 * if there is more than one matching method
 	 */
 	public static UriComponentsBuilder fromMethodName(Class<?> controllerType, String methodName, Object... argumentValues) {
+		Method method = getMethod(controllerType, methodName, argumentValues);
+		return fromMethod(method, argumentValues);
+	}
+
+	private static Method getMethod(Class<?> controllerType, String methodName, Object... argumentValues) {
 		Method match = null;
 		for (Method method : controllerType.getDeclaredMethods()) {
 			if (method.getName().equals(methodName) && method.getParameterTypes().length == argumentValues.length) {
 				if (match != null) {
-					throw new IllegalStateException("Found two methods named '" + methodName + "' having " +
+					throw new IllegalArgumentException("Found two methods named '" + methodName + "' having " +
 							Arrays.asList(argumentValues) + " arguments, controller " + controllerType.getName());
 				}
 				match = method;
@@ -133,36 +168,14 @@ public class MvcUriComponentsBuilder extends UriComponentsBuilder {
 			throw new IllegalArgumentException("No method '" + methodName + "' with " + argumentValues.length +
 					" parameters found in " + controllerType.getName());
 		}
-		return fromMethod(match, argumentValues);
+		return match;
 	}
 
 	/**
-	 * Create a {@link UriComponentsBuilder} by pointing to a controller method and
-	 * providing method argument values. The method argument values are used to
-	 * prepare the URI for example expanding path variables, or adding request
-	 * parameters. Any other arguments not relevant to the URL can be provided as
-	 * {@literal null} and will be ignored.
-	 * <p>Additional (custom) argument types can be supported through an implementation
-	 * of {@link org.springframework.web.method.support.UriComponentsContributor}.
-	 * @param method the target controller method
-	 * @param argumentValues argument values matching to method parameters
-	 * @return a UriComponentsBuilder instance
-	 */
-	public static UriComponentsBuilder fromMethod(Method method, Object... argumentValues) {
-		UriComponentsBuilder builder = ServletUriComponentsBuilder.newInstance().path(getMethodRequestMapping(method));
-		UriComponents uriComponents = applyContributors(builder, method, argumentValues);
-
-		String typePath = getTypeRequestMapping(method.getDeclaringClass());
-		String methodPath = uriComponents.getPath();
-		String path = pathMatcher.combine(typePath, methodPath);
-
-		return ServletUriComponentsBuilder.fromCurrentServletMapping().path(path).queryParams(uriComponents.getQueryParams());
-	}
-
-	/**
-	 * Create a {@link UriComponents} by invoking a method on a "mock" controller, similar
-	 * to how test frameworks provide mock objects and record method invocations.
-	 * <p>For example given this controller:
+	 * Create a {@link UriComponentsBuilder} by invoking a "mock" controller method.
+	 * The controller method and the supplied argument values are then used to
+	 * delegate to {@link #fromMethod(java.lang.reflect.Method, Object...)}.
+	 * <p>For example, given this controller:
 	 * <pre class="code">
 	 * &#064;RequestMapping("/people/{id}/addresses")
 	 * class AddressController {
@@ -174,71 +187,126 @@ public class MvcUriComponentsBuilder extends UriComponentsBuilder {
 	 *   public void addAddress(Address address) { ... }
 	 * }
 	 * </pre>
-	 * A "mock" controller can be used as follows:
+	 * A UriComponentsBuilder can be created:
 	 * <pre class="code">
-	 * // Inline style with static import of MvcUriComponentsBuilder.mock
+	 * // Inline style with static import of "MvcUriComponentsBuilder.on"
 	 *
 	 * MvcUriComponentsBuilder.fromMethodCall(
-	 * 		mock(CustomerController.class).showAddresses("US")).buildAndExpand(1);
+	 * 		on(CustomerController.class).showAddresses("US")).buildAndExpand(1);
 	 *
-	 * // Longer style for preparing multiple URIs and for void controller methods
+	 * // Longer form useful for repeated invocation (and void controller methods)
 	 *
-	 * CustomerController controller = MvcUriComponentsBuilder.mock(CustomController.class);
+	 * CustomerController controller = MvcUriComponentsBuilder.on(CustomController.class);
 	 * controller.addAddress(null);
-	 *
-	 * MvcUriComponentsBuilder.fromMethodCall(controller);
+	 * builder = MvcUriComponentsBuilder.fromMethodCall(controller);
+	 * controller.getAddressesForCountry("US")
+	 * builder = MvcUriComponentsBuilder.fromMethodCall(controller);
 	 * </pre>
-	 * The above  supports {@code @PathVariable} and {@code @RequestParam} method parameters.
-	 * Any other arguments can be provided as {@literal null} and will be ignored.
-	 * <p>Additional (custom) argument types can be supported through an implementation
-	 * of {@link org.springframework.web.method.support.UriComponentsContributor}.
-	 * @param methodInvocationInfo either the value returned from a "mock" controller
+	 * @param invocationInfo either the value returned from a "mock" controller
 	 * invocation or the "mock" controller itself after an invocation
 	 * @return a UriComponents instance
 	 */
-	public static UriComponentsBuilder fromMethodCall(Object methodInvocationInfo) {
-		Assert.isInstanceOf(MethodInvocationInfo.class, methodInvocationInfo);
-		MethodInvocationInfo info = (MethodInvocationInfo) methodInvocationInfo;
-
-		Method method = info.getControllerMethod();
-		Object[] argumentValues = info.getArgumentValues();
-
-		UriComponentsBuilder builder = ServletUriComponentsBuilder.newInstance().path(getMethodRequestMapping(method));
-		UriComponents uriComponents = applyContributors(builder, method, argumentValues);
-
-		String typeMapping = getTypeRequestMapping(method.getDeclaringClass());
-		String methodMapping = uriComponents.getPath();
-		String path = pathMatcher.combine(typeMapping, methodMapping);
-
-		return ServletUriComponentsBuilder.fromCurrentServletMapping().path(path).queryParams(uriComponents.getQueryParams());
+	public static UriComponentsBuilder fromMethodCall(Object invocationInfo) {
+		Assert.isInstanceOf(MethodInvocationInfo.class, invocationInfo);
+		MethodInvocationInfo info = (MethodInvocationInfo) invocationInfo;
+		return fromMethod(info.getControllerMethod(), info.getArgumentValues());
 	}
 
+	/**
+	 * Create a URL from the name of a Spring MVC controller method's request mapping.
+	 *
+	 * <p>The configured
+	 * {@link org.springframework.web.servlet.handler.HandlerMethodMappingNamingStrategy
+	 * HandlerMethodMappingNamingStrategy} determines the names of controller
+	 * method request mappings at startup. By default all mappings are assigned
+	 * a name based on the capital letters of the class name, followed by "#" as
+	 * separator, and then the method name. For example "PC#getPerson"
+	 * for a class named PersonController with method getPerson. In case the
+	 * naming convention does not produce unique results, an explicit name may
+	 * be assigned through the name attribute of the {@code @RequestMapping}
+	 * annotation.
+	 *
+	 * <p>This is aimed primarily for use in view rendering technologies and EL
+	 * expressions. The Spring URL tag library registers this method as a function
+	 * called "mvcUrl".
+	 *
+	 * <p>For example, given this controller:
+	 * <pre class="code">
+	 * &#064;RequestMapping("/people")
+	 * class PersonController {
+	 *
+	 *   &#064;RequestMapping("/{id}")
+	 *   public HttpEntity<Void> getPerson(&#064;PathVariable String id) { ... }
+	 *
+	 * }
+	 * </pre>
+	 *
+	 * A JSP can prepare a URL to the controller method as follows:
+	 *
+	 * <pre class="code">
+	 * <%@ taglib uri="http://www.springframework.org/tags" prefix="s" %>
+	 *
+	 * &lt;a href="${s:mvcUrl('PC#getPerson').arg(0,"123").build()}"&gt;Get Person&lt;/a&gt;
+	 * </pre>
+	 *
+	 * <p>Note that it's not necessary to specify all arguments. Only the ones
+	 * required to prepare the URL, mainly {@code @RequestParam} and {@code @PathVariable}).
+	 *
+	 * @param mappingName the mapping name
+	 * @return a builder to to prepare the URI String
+	 * @throws IllegalArgumentException if the mapping name is not found or
+	 * if there is no unique match
+	 * @since 4.1
+	 */
+	public static MethodArgumentBuilder fromMappingName(String mappingName) {
+		RequestMappingInfoHandlerMapping handlerMapping = getRequestMappingInfoHandlerMapping();
+		List<HandlerMethod> handlerMethods = handlerMapping.getHandlerMethodsForMappingName(mappingName);
+		if (handlerMethods == null) {
+			throw new IllegalArgumentException("Mapping mappingName not found: " + mappingName);
+		}
+		if (handlerMethods.size() != 1) {
+			throw new IllegalArgumentException(
+					"No unique match for mapping mappingName " + mappingName + ": " + handlerMethods);
+		}
+		return new MethodArgumentBuilder(handlerMethods.get(0).getMethod());
+	}
 
-	private static String getTypeRequestMapping(Class<?> controllerType) {
-		Assert.notNull(controllerType, "'controllerType' must not be null");
-		RequestMapping annot = AnnotationUtils.findAnnotation(controllerType, RequestMapping.class);
-		if ((annot == null) || ObjectUtils.isEmpty(annot.value()) || StringUtils.isEmpty(annot.value()[0])) {
-			return "/";
-		}
-		if (annot.value().length > 1) {
-			logger.warn("Multiple mappings on controller " + controllerType.getName() + ", using the first one");
-		}
-		return annot.value()[0];
+	/**
+	 * Create a {@link UriComponentsBuilder} from the mapping of a controller method
+	 * and an array of method argument values. The array of values  must match the
+	 * signature of the controller method. Values for {@code @RequestParam} and
+	 * {@code @PathVariable} are used for building the URI (via implementations of
+	 * {@link org.springframework.web.method.support.UriComponentsContributor})
+	 * while remaining argument values are ignored and can be {@code null}.
+	 * @param method the controller method
+	 * @param argumentValues argument values for the controller method
+	 * @return a UriComponentsBuilder instance, never {@code null}
+	 */
+	public static UriComponentsBuilder fromMethod(Method method, Object... argumentValues) {
+		String typePath = getTypeRequestMapping(method.getDeclaringClass());
+		String methodPath = getMethodRequestMapping(method);
+		String path = pathMatcher.combine(typePath, methodPath);
+
+		UriComponentsBuilder builder = ServletUriComponentsBuilder.fromCurrentServletMapping().path(path);
+		UriComponents uriComponents = applyContributors(builder, method, argumentValues);
+		return ServletUriComponentsBuilder.newInstance().uriComponents(uriComponents);
 	}
 
 	private static String getMethodRequestMapping(Method method) {
 		RequestMapping annot = AnnotationUtils.findAnnotation(method, RequestMapping.class);
-		Assert.notNull(annot, "No @RequestMapping on: " + method.toGenericString());
+		if (annot == null) {
+			throw new IllegalArgumentException("No @RequestMapping on: " + method.toGenericString());
+		}
 		if (ObjectUtils.isEmpty(annot.value()) || StringUtils.isEmpty(annot.value()[0])) {
 			return "/";
 		}
-		if (annot.value().length > 1) {
-			logger.debug("Multiple mappings on method " + method.toGenericString() + ", using first one");
+		if (annot.value().length > 1 && logger.isWarnEnabled()) {
+			logger.warn("Multiple paths on method " + method.toGenericString() + ", using first one");
 		}
 		return annot.value()[0];
 	}
 
-	private static UriComponents applyContributors(UriComponentsBuilder builder, Method method, Object[] args) {
+	private static UriComponents applyContributors(UriComponentsBuilder builder, Method method, Object... args) {
 		CompositeUriComponentsContributor contributor = getConfiguredUriComponentsContributor();
 		if (contributor == null) {
 			logger.debug("Using default CompositeUriComponentsContributor");
@@ -247,38 +315,34 @@ public class MvcUriComponentsBuilder extends UriComponentsBuilder {
 
 		int paramCount = method.getParameterTypes().length;
 		int argCount = args.length;
-		Assert.isTrue(paramCount == argCount,  "Number of method parameters " + paramCount +
-				" does not match number of argument values " + argCount);
+		if (paramCount != argCount) {
+			throw new IllegalArgumentException("Number of method parameters " + paramCount +
+					" does not match number of argument values " + argCount);
+		}
 
-		Map<String, Object> uriVars = new HashMap<String, Object>();
-		for (int i=0; i < paramCount; i++) {
+		final Map<String, Object> uriVars = new HashMap<String, Object>();
+		for (int i = 0; i < paramCount; i++) {
 			MethodParameter param = new MethodParameter(method, i);
 			param.initParameterNameDiscovery(parameterNameDiscoverer);
 			contributor.contributeMethodArgument(param, args[i], builder, uriVars);
 		}
-		return builder.buildAndExpand(uriVars);
+
+		// We may not have all URI var values, expand only what we have
+		return builder.build().expand(new UriComponents.UriTemplateVariables() {
+			@Override
+			public Object getValue(String name) {
+				return uriVars.containsKey(name) ? uriVars.get(name) : UriComponents.UriTemplateVariables.SKIP_VALUE;
+			}
+		});
 	}
 
 	protected static CompositeUriComponentsContributor getConfiguredUriComponentsContributor() {
-		RequestAttributes requestAttributes = RequestContextHolder.getRequestAttributes();
-		if (requestAttributes == null) {
-			logger.debug("No request bound to the current thread: is DispatcherSerlvet used?");
-			return null;
-		}
-		HttpServletRequest request = ((ServletRequestAttributes) requestAttributes).getRequest();
-		if (request == null) {
-			logger.debug("Request bound to current thread is not an HttpServletRequest");
-			return null;
-		}
-		WebApplicationContext wac = (WebApplicationContext) request.getAttribute(
-				DispatcherServlet.WEB_APPLICATION_CONTEXT_ATTRIBUTE);
+		WebApplicationContext wac = getWebApplicationContext();
 		if (wac == null) {
-			logger.debug("No WebApplicationContext found: not in a DispatcherServlet request?");
 			return null;
 		}
 		try {
-			String beanName = MVC_URI_COMPONENTS_CONTRIBUTOR_BEAN_NAME;
-			return wac.getBean(beanName, CompositeUriComponentsContributor.class);
+			return wac.getBean(MVC_URI_COMPONENTS_CONTRIBUTOR_BEAN_NAME, CompositeUriComponentsContributor.class);
 		}
 		catch (NoSuchBeanDefinitionException ex) {
 			if (logger.isDebugEnabled()) {
@@ -289,16 +353,52 @@ public class MvcUriComponentsBuilder extends UriComponentsBuilder {
 		}
 	}
 
+	protected static RequestMappingInfoHandlerMapping getRequestMappingInfoHandlerMapping() {
+		WebApplicationContext wac = getWebApplicationContext();
+		Assert.notNull(wac, "Cannot lookup handler method mappings without WebApplicationContext");
+		try {
+			return wac.getBean(RequestMappingInfoHandlerMapping.class);
+		}
+		catch (NoUniqueBeanDefinitionException ex) {
+			throw new IllegalStateException("More than one RequestMappingInfoHandlerMapping beans found", ex);
+		}
+		catch (NoSuchBeanDefinitionException ex) {
+			throw new IllegalStateException("No RequestMappingInfoHandlerMapping bean", ex);
+		}
+	}
+
+	private static WebApplicationContext getWebApplicationContext() {
+		RequestAttributes requestAttributes = RequestContextHolder.getRequestAttributes();
+		if (requestAttributes == null) {
+			logger.debug("No request bound to the current thread: is DispatcherSerlvet used?");
+			return null;
+		}
+
+		HttpServletRequest request = ((ServletRequestAttributes) requestAttributes).getRequest();
+		if (request == null) {
+			logger.debug("Request bound to current thread is not an HttpServletRequest");
+			return null;
+		}
+
+		String attributeName = DispatcherServlet.WEB_APPLICATION_CONTEXT_ATTRIBUTE;
+		WebApplicationContext wac = (WebApplicationContext) request.getAttribute(attributeName);
+		if (wac == null) {
+			logger.debug("No WebApplicationContext found: not in a DispatcherServlet request?");
+			return null;
+		}
+		return wac;
+	}
+
 	/**
 	 * Return a "mock" controller instance. When an {@code @RequestMapping} method
 	 * on the controller is invoked, the supplied argument values are remembered
-	 * and the result can then be used to prepare a URL to the method via
-	 * {@link #fromMethodCall(Object)}.
-	 * <p>This is a shorthand version of {@link #controller(Class)} intended for
-	 * inline use as follows:
+	 * and the result can then be used to create a {@code UriComponentsBuilder}
+	 * via {@link #fromMethodCall(Object)}.
+	 * <p>
+	 * Note that this is a shorthand version of {@link #controller(Class)} intended
+	 * for inline use (with a static import), for example:
 	 * <pre class="code">
-	 * UriComponentsBuilder builder = MvcUriComponentsBuilder.fromMethodCall(
-	 * 		on(FooController.class).getFoo(1)).build();
+	 * MvcUriComponentsBuilder.fromMethodCall(on(FooController.class).getFoo(1)).build();
 	 * </pre>
 	 * @param controllerType the target controller
 	 */
@@ -309,10 +409,11 @@ public class MvcUriComponentsBuilder extends UriComponentsBuilder {
 	/**
 	 * Return a "mock" controller instance. When an {@code @RequestMapping} method
 	 * on the controller is invoked, the supplied argument values are remembered
-	 * and the result can then be used to prepare a URL to the method via
+	 * and the result can then be used to create {@code UriComponentsBuilder} via
 	 * {@link #fromMethodCall(Object)}.
-	 * <p>This is a longer version of {@link #on(Class)} for use with void controller
-	 * methods as well as for creating multiple links in succession.
+	 * <p>
+	 * This is a longer version of {@link #on(Class)}. It is needed with controller
+	 * methods returning void as well for repeated invocations.
 	 * <pre class="code">
 	 * FooController fooController = controller(FooController.class);
 	 *
@@ -341,12 +442,18 @@ public class MvcUriComponentsBuilder extends UriComponentsBuilder {
 		else {
 			Enhancer enhancer = new Enhancer();
 			enhancer.setSuperclass(type);
-			enhancer.setInterfaces(new Class<?>[]{MethodInvocationInfo.class});
+			enhancer.setInterfaces(new Class<?>[] {MethodInvocationInfo.class});
+			enhancer.setNamingPolicy(SpringNamingPolicy.INSTANCE);
 			enhancer.setCallbackType(org.springframework.cglib.proxy.MethodInterceptor.class);
 			Factory factory = (Factory) objenesis.newInstance(enhancer.createClass());
 			factory.setCallbacks(new Callback[] {interceptor});
 			return (T) factory;
 		}
+	}
+
+	@Override
+	protected Object clone() {
+		return new MvcUriComponentsBuilder(this);
 	}
 
 
@@ -362,6 +469,7 @@ public class MvcUriComponentsBuilder extends UriComponentsBuilder {
 		private Method controllerMethod;
 
 		private Object[] argumentValues;
+
 
 		@Override
 		public Object intercept(Object obj, Method method, Object[] args, MethodProxy proxy) {
@@ -394,6 +502,39 @@ public class MvcUriComponentsBuilder extends UriComponentsBuilder {
 		Method getControllerMethod();
 
 		Object[] getArgumentValues();
+	}
+
+
+	public static class MethodArgumentBuilder {
+
+		private final Method method;
+
+		private final Object[] argumentValues;
+
+
+		public MethodArgumentBuilder(Method method) {
+			Assert.notNull(method, "'method' is required");
+			this.method = method;
+			this.argumentValues = new Object[method.getParameterTypes().length];
+			for (int i = 0; i < this.argumentValues.length; i++) {
+				this.argumentValues[i] = null;
+			}
+		}
+
+		public MethodArgumentBuilder arg(int index, Object value) {
+			this.argumentValues[index] = value;
+			return this;
+		}
+
+		public String build() {
+			return MvcUriComponentsBuilder.fromMethod(this.method, this.argumentValues)
+					.build(false).encode().toUriString();
+		}
+
+		public String buildAndExpand(Object... uriVariables) {
+			return MvcUriComponentsBuilder.fromMethod(this.method, this.argumentValues)
+					.build(false).expand(uriVariables).encode().toString();
+		}
 	}
 
 }

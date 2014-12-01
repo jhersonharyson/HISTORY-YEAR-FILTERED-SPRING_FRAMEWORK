@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,7 +26,9 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 
+import org.junit.Ignore;
 import org.junit.Test;
 import org.mockito.Mockito;
 
@@ -34,6 +36,7 @@ import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.FactoryBean;
 import org.springframework.beans.factory.ObjectFactory;
+import org.springframework.beans.factory.UnsatisfiedDependencyException;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.config.TypedStringValue;
@@ -57,6 +60,7 @@ import static org.junit.Assert.*;
  * @author Mark Fisher
  * @author Sam Brannen
  * @author Chris Beams
+ * @author Stephane Nicoll
  */
 public class AutowiredAnnotationBeanPostProcessorTests {
 
@@ -547,6 +551,23 @@ public class AutowiredAnnotationBeanPostProcessorTests {
 		assertSame(ntb1, bean.getNestedTestBeans()[0]);
 		assertSame(ntb2, bean.getNestedTestBeans()[1]);
 		bf.destroySingletons();
+	}
+
+	@Test
+	public void testConstructorResourceInjectionWithNoCandidatesAndNoFallback() {
+		DefaultListableBeanFactory bf = new DefaultListableBeanFactory();
+		AutowiredAnnotationBeanPostProcessor bpp = new AutowiredAnnotationBeanPostProcessor();
+		bpp.setBeanFactory(bf);
+		bf.addBeanPostProcessor(bpp);
+		bf.registerBeanDefinition("annotatedBean", new RootBeanDefinition(ConstructorWithoutFallbackBean.class));
+
+		try {
+			bf.getBean("annotatedBean");
+			fail("Should have thrown UnsatisfiedDependencyException");
+		}
+		catch (UnsatisfiedDependencyException ex) {
+			// expected
+		}
 	}
 
 	@Test
@@ -1647,6 +1668,107 @@ public class AutowiredAnnotationBeanPostProcessorTests {
 		assertSame(ngr, bean.integerRepositoryMap.get("simpleRepo"));
 	}
 
+	@Test
+	public void testGenericsBasedInjectionIntoMatchingTypeVariable() {
+		DefaultListableBeanFactory bf = new DefaultListableBeanFactory();
+		bf.setAutowireCandidateResolver(new QualifierAnnotationAutowireCandidateResolver());
+		AutowiredAnnotationBeanPostProcessor bpp = new AutowiredAnnotationBeanPostProcessor();
+		bpp.setBeanFactory(bf);
+		bf.addBeanPostProcessor(bpp);
+		RootBeanDefinition bd = new RootBeanDefinition(GenericInterface1Impl.class);
+		bd.setFactoryMethodName("create");
+		bf.registerBeanDefinition("bean1", bd);
+		bf.registerBeanDefinition("bean2", new RootBeanDefinition(GenericInterface2Impl.class));
+
+		GenericInterface1Impl bean1 = (GenericInterface1Impl) bf.getBean("bean1");
+		GenericInterface2Impl bean2 = (GenericInterface2Impl) bf.getBean("bean2");
+		assertSame(bean2, bean1.gi2);
+	}
+
+	@Test
+	public void testGenericsBasedInjectionIntoUnresolvedTypeVariable() {
+		DefaultListableBeanFactory bf = new DefaultListableBeanFactory();
+		bf.setAutowireCandidateResolver(new QualifierAnnotationAutowireCandidateResolver());
+		AutowiredAnnotationBeanPostProcessor bpp = new AutowiredAnnotationBeanPostProcessor();
+		bpp.setBeanFactory(bf);
+		bf.addBeanPostProcessor(bpp);
+		RootBeanDefinition bd = new RootBeanDefinition(GenericInterface1Impl.class);
+		bd.setFactoryMethodName("createPlain");
+		bf.registerBeanDefinition("bean1", bd);
+		bf.registerBeanDefinition("bean2", new RootBeanDefinition(GenericInterface2Impl.class));
+
+		GenericInterface1Impl bean1 = (GenericInterface1Impl) bf.getBean("bean1");
+		GenericInterface2Impl bean2 = (GenericInterface2Impl) bf.getBean("bean2");
+		assertSame(bean2, bean1.gi2);
+	}
+
+	@Test
+	public void testGenericsBasedInjectionIntoTypeVariableSelectingBestMatch() {
+		DefaultListableBeanFactory bf = new DefaultListableBeanFactory();
+		bf.setAutowireCandidateResolver(new QualifierAnnotationAutowireCandidateResolver());
+		AutowiredAnnotationBeanPostProcessor bpp = new AutowiredAnnotationBeanPostProcessor();
+		bpp.setBeanFactory(bf);
+		bf.addBeanPostProcessor(bpp);
+		RootBeanDefinition bd = new RootBeanDefinition(GenericInterface1Impl.class);
+		bd.setFactoryMethodName("create");
+		bf.registerBeanDefinition("bean1", bd);
+		bf.registerBeanDefinition("bean2", new RootBeanDefinition(GenericInterface2Impl.class));
+		bf.registerBeanDefinition("bean2a", new RootBeanDefinition(ReallyGenericInterface2Impl.class));
+		bf.registerBeanDefinition("bean2b", new RootBeanDefinition(PlainGenericInterface2Impl.class));
+
+		GenericInterface1Impl bean1 = (GenericInterface1Impl) bf.getBean("bean1");
+		GenericInterface2Impl bean2 = (GenericInterface2Impl) bf.getBean("bean2");
+		assertSame(bean2, bean1.gi2);
+	}
+
+	@Test
+	@Ignore  // SPR-11521
+	public void testGenericsBasedInjectionIntoTypeVariableSelectingBestMatchAgainstFactoryMethodSignature() {
+		DefaultListableBeanFactory bf = new DefaultListableBeanFactory();
+		bf.setAutowireCandidateResolver(new QualifierAnnotationAutowireCandidateResolver());
+		AutowiredAnnotationBeanPostProcessor bpp = new AutowiredAnnotationBeanPostProcessor();
+		bpp.setBeanFactory(bf);
+		bf.addBeanPostProcessor(bpp);
+		RootBeanDefinition bd = new RootBeanDefinition(GenericInterface1Impl.class);
+		bd.setFactoryMethodName("createErased");
+		bf.registerBeanDefinition("bean1", bd);
+		bf.registerBeanDefinition("bean2", new RootBeanDefinition(GenericInterface2Impl.class));
+		bf.registerBeanDefinition("bean2a", new RootBeanDefinition(ReallyGenericInterface2Impl.class));
+		bf.registerBeanDefinition("bean2b", new RootBeanDefinition(PlainGenericInterface2Impl.class));
+
+		GenericInterface1Impl bean1 = (GenericInterface1Impl) bf.getBean("bean1");
+		GenericInterface2Impl bean2 = (GenericInterface2Impl) bf.getBean("bean2");
+		assertSame(bean2, bean1.gi2);
+	}
+
+	@Test
+	public void testCircularTypeReference() {
+		DefaultListableBeanFactory bf = new DefaultListableBeanFactory();
+		bf.setAutowireCandidateResolver(new QualifierAnnotationAutowireCandidateResolver());
+		AutowiredAnnotationBeanPostProcessor bpp = new AutowiredAnnotationBeanPostProcessor();
+		bpp.setBeanFactory(bf);
+		bf.addBeanPostProcessor(bpp);
+		bf.registerBeanDefinition("bean1", new RootBeanDefinition(StockServiceImpl.class));
+		bf.registerBeanDefinition("bean2", new RootBeanDefinition(StockMovementDaoImpl.class));
+		bf.registerBeanDefinition("bean3", new RootBeanDefinition(StockMovementImpl.class));
+		bf.registerBeanDefinition("bean4", new RootBeanDefinition(StockMovementInstructionImpl.class));
+
+		StockServiceImpl service = bf.getBean(StockServiceImpl.class);
+		assertSame(bf.getBean(StockMovementDaoImpl.class), service.stockMovementDao);
+	}
+
+	@Test
+	public void testBridgeMethodHandling() {
+		DefaultListableBeanFactory bf = new DefaultListableBeanFactory();
+		AutowiredAnnotationBeanPostProcessor bpp = new AutowiredAnnotationBeanPostProcessor();
+		bpp.setBeanFactory(bf);
+		bf.addBeanPostProcessor(bpp);
+		bf.registerBeanDefinition("bean1", new RootBeanDefinition(MyCallable.class));
+		bf.registerBeanDefinition("bean2", new RootBeanDefinition(SecondCallable.class));
+		bf.registerBeanDefinition("bean3", new RootBeanDefinition(FooBar.class));
+		assertNotNull(bf.getBean(FooBar.class));
+	}
+
 
 	public static class ResourceInjectionBean {
 
@@ -1673,7 +1795,7 @@ public class AutowiredAnnotationBeanPostProcessorTests {
 	}
 
 
-	public static class ExtendedResourceInjectionBean<T> extends ResourceInjectionBean {
+	static class NonPublicResourceInjectionBean<T> extends ResourceInjectionBean {
 
 		@Autowired
 		public final ITestBean testBean3 = null;
@@ -1686,7 +1808,7 @@ public class AutowiredAnnotationBeanPostProcessorTests {
 
 		public boolean baseInjected = false;
 
-		public ExtendedResourceInjectionBean() {
+		public NonPublicResourceInjectionBean() {
 		}
 
 		@Override
@@ -1729,12 +1851,11 @@ public class AutowiredAnnotationBeanPostProcessorTests {
 	}
 
 
-	public static class TypedExtendedResourceInjectionBean extends ExtendedResourceInjectionBean<NestedTestBean> {
-
+	public static class TypedExtendedResourceInjectionBean extends NonPublicResourceInjectionBean<NestedTestBean> {
 	}
 
 
-	public static class OverriddenExtendedResourceInjectionBean extends ExtendedResourceInjectionBean<NestedTestBean> {
+	public static class OverriddenExtendedResourceInjectionBean extends NonPublicResourceInjectionBean<NestedTestBean> {
 
 		public boolean subInjected = false;
 
@@ -1956,6 +2077,21 @@ public class AutowiredAnnotationBeanPostProcessorTests {
 	}
 
 
+	public static class ConstructorWithoutFallbackBean {
+
+		protected ITestBean testBean3;
+
+		@Autowired(required = false)
+		public ConstructorWithoutFallbackBean(ITestBean testBean3) {
+			this.testBean3 = testBean3;
+		}
+
+		public ITestBean getTestBean3() {
+			return this.testBean3;
+		}
+	}
+
+
 	public static class ConstructorsCollectionResourceInjectionBean {
 
 		protected ITestBean testBean3;
@@ -2020,7 +2156,6 @@ public class AutowiredAnnotationBeanPostProcessorTests {
 
 		@Autowired
 		private Map<String, TestBean> testBeanMap;
-
 
 		public Map<String, TestBean> getTestBeanMap() {
 			return this.testBeanMap;
@@ -2114,7 +2249,6 @@ public class AutowiredAnnotationBeanPostProcessorTests {
 	public static class CustomAnnotationOptionalMethodResourceInjectionBean extends ResourceInjectionBean {
 
 		private TestBean testBean3;
-
 
 		@MyAutowired(optional = true)
 		protected void setTestBean3(TestBean testBean3) {
@@ -2524,13 +2658,152 @@ public class AutowiredAnnotationBeanPostProcessorTests {
 
 		@SuppressWarnings("unchecked")
 		public <T> T createMock(Class<T> toMock) {
-			return (T) Proxy.newProxyInstance(AutowiredAnnotationBeanPostProcessorTests.class.getClassLoader(), new Class<?>[]{toMock},
+			return (T) Proxy.newProxyInstance(AutowiredAnnotationBeanPostProcessorTests.class.getClassLoader(), new Class<?>[] {toMock},
 					new InvocationHandler() {
 						@Override
 						public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
 							throw new UnsupportedOperationException("mocked!");
 						}
 					});
+		}
+	}
+
+
+	public interface GenericInterface1<T> {
+
+		public String doSomethingGeneric(T o);
+	}
+
+
+	public static class GenericInterface1Impl<T> implements GenericInterface1<T> {
+
+		@Autowired
+		private GenericInterface2<T> gi2;
+
+		@Override
+		public String doSomethingGeneric(T o) {
+			return gi2.doSomethingMoreGeneric(o) + "_somethingGeneric_" + o;
+		}
+
+		public static GenericInterface1<String> create() {
+			return new StringGenericInterface1Impl();
+		}
+
+		public static GenericInterface1<String> createErased() {
+			return new GenericInterface1Impl<String>();
+		}
+
+		public static GenericInterface1 createPlain() {
+			return new GenericInterface1Impl();
+		}
+	}
+
+
+	public static class StringGenericInterface1Impl extends GenericInterface1Impl<String> {
+	}
+
+
+	public interface GenericInterface2<K> {
+
+		public String doSomethingMoreGeneric(K o);
+	}
+
+
+	public static class GenericInterface2Impl implements GenericInterface2<String> {
+
+		@Override
+		public String doSomethingMoreGeneric(String o) {
+			return "somethingMoreGeneric_" + o;
+		}
+	}
+
+
+	public static class ReallyGenericInterface2Impl implements GenericInterface2<Object> {
+
+		@Override
+		public String doSomethingMoreGeneric(Object o) {
+			return "somethingMoreGeneric_" + o;
+		}
+	}
+
+
+	public static class PlainGenericInterface2Impl implements GenericInterface2 {
+
+		@Override
+		public String doSomethingMoreGeneric(Object o) {
+			return "somethingMoreGeneric_" + o;
+		}
+	}
+
+
+	public interface StockMovement<P extends StockMovementInstruction> {
+	}
+
+
+	public interface StockMovementInstruction<C extends StockMovement> {
+	}
+
+
+	public interface StockMovementDao<S extends StockMovement> {
+	}
+
+
+	public static class StockMovementImpl<P extends StockMovementInstruction> implements StockMovement<P> {
+	}
+
+
+	public static class StockMovementInstructionImpl<C extends StockMovement> implements StockMovementInstruction<C> {
+	}
+
+
+	public static class StockMovementDaoImpl<E extends StockMovement> implements StockMovementDao<E> {
+	}
+
+
+	public static class StockServiceImpl {
+
+		@Autowired
+		private StockMovementDao<StockMovement> stockMovementDao;
+	}
+
+
+	public static class MyCallable implements Callable<Thread> {
+
+		@Override
+		public Thread call() throws Exception {
+			return null;
+		}
+	}
+
+
+	public static class SecondCallable implements Callable<Thread>{
+
+		@Override
+		public Thread call() throws Exception {
+			return null;
+		}
+	}
+
+
+	public static abstract class Foo<T extends Runnable, RT extends Callable<T>> {
+
+		private RT obj;
+
+		protected void setObj(RT obj) {
+			if (this.obj != null) {
+				throw new IllegalStateException("Already called");
+			}
+			this.obj = obj;
+		}
+	}
+
+
+	public static class FooBar extends Foo<Thread, MyCallable> {
+
+		@Override
+		@Autowired
+		public void setObj(MyCallable obj) {
+			super.setObj(obj);
 		}
 	}
 

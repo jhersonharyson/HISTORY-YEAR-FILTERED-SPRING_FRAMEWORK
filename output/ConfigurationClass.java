@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 
 package org.springframework.context.annotation;
 
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -54,7 +53,7 @@ final class ConfigurationClass {
 
 	private String beanName;
 
-	private final ConfigurationClass importedBy;
+	private final Set<ConfigurationClass> importedBy = new LinkedHashSet<ConfigurationClass>(1);
 
 	private final Set<BeanMethod> beanMethods = new LinkedHashSet<BeanMethod>();
 
@@ -69,15 +68,13 @@ final class ConfigurationClass {
 	 * Create a new {@link ConfigurationClass} with the given name.
 	 * @param metadataReader reader used to parse the underlying {@link Class}
 	 * @param beanName must not be {@code null}
-	 * @throws IllegalArgumentException if beanName is null (as of Spring 3.1.1)
 	 * @see ConfigurationClass#ConfigurationClass(Class, ConfigurationClass)
 	 */
 	public ConfigurationClass(MetadataReader metadataReader, String beanName) {
-		Assert.hasText(beanName, "bean name must not be null");
+		Assert.hasText(beanName, "Bean name must not be null");
 		this.metadata = metadataReader.getAnnotationMetadata();
 		this.resource = metadataReader.getResource();
 		this.beanName = beanName;
-		this.importedBy = null;
 	}
 
 	/**
@@ -91,14 +88,13 @@ final class ConfigurationClass {
 	public ConfigurationClass(MetadataReader metadataReader, ConfigurationClass importedBy) {
 		this.metadata = metadataReader.getAnnotationMetadata();
 		this.resource = metadataReader.getResource();
-		this.importedBy = importedBy;
+		this.importedBy.add(importedBy);
 	}
 
 	/**
 	 * Create a new {@link ConfigurationClass} with the given name.
 	 * @param clazz the underlying {@link Class} to represent
 	 * @param beanName name of the {@code @Configuration} class bean
-	 * @throws IllegalArgumentException if beanName is null (as of Spring 3.1.1)
 	 * @see ConfigurationClass#ConfigurationClass(Class, ConfigurationClass)
 	 */
 	public ConfigurationClass(Class<?> clazz, String beanName) {
@@ -106,7 +102,6 @@ final class ConfigurationClass {
 		this.metadata = new StandardAnnotationMetadata(clazz, true);
 		this.resource = new DescriptiveResource(clazz.toString());
 		this.beanName = beanName;
-		this.importedBy = null;
 	}
 
 	/**
@@ -120,7 +115,20 @@ final class ConfigurationClass {
 	public ConfigurationClass(Class<?> clazz, ConfigurationClass importedBy) {
 		this.metadata = new StandardAnnotationMetadata(clazz, true);
 		this.resource = new DescriptiveResource(clazz.toString());
-		this.importedBy = importedBy;
+		this.importedBy.add(importedBy);
+	}
+
+	/**
+	 * Create a new {@link ConfigurationClass} with the given name.
+	 * @param metadata the metadata for the underlying class to represent
+	 * @param beanName name of the {@code @Configuration} class bean
+	 * @see ConfigurationClass#ConfigurationClass(Class, ConfigurationClass)
+	 */
+	public ConfigurationClass(AnnotationMetadata metadata, String beanName) {
+		Assert.hasText(beanName, "Bean name must not be null");
+		this.metadata = metadata;
+		this.resource = new DescriptiveResource(metadata.getClassName());
+		this.beanName = beanName;
 	}
 
 
@@ -151,16 +159,24 @@ final class ConfigurationClass {
 	 * @see #getImportedBy()
 	 */
 	public boolean isImported() {
-		return (this.importedBy != null);
+		return !this.importedBy.isEmpty();
 	}
 
 	/**
-	 * Return the configuration class that imported this class,
-	 * or {@code null} if this configuration was not imported.
-	 * @since 4.0
+	 * Merge the imported-by declarations from the given configuration class into this one.
+	 * @since 4.0.5
+	 */
+	public void mergeImportedBy(ConfigurationClass otherConfigClass) {
+		this.importedBy.addAll(otherConfigClass.importedBy);
+	}
+
+	/**
+	 * Return the configuration classes that imported this class,
+	 * or an empty Set if this configuration was not imported.
+	 * @since 4.0.5
 	 * @see #isImported()
 	 */
-	public ConfigurationClass getImportedBy() {
+	public Set<ConfigurationClass> getImportedBy() {
 		return this.importedBy;
 	}
 

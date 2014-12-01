@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,6 +17,7 @@
 package org.springframework.web.socket.server.jetty;
 
 import java.io.IOException;
+import java.security.Principal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -62,7 +63,7 @@ public class JettyRequestUpgradeStrategy implements RequestUpgradeStrategy {
 			new NamedThreadLocal<WebSocketHandlerContainer>("WebSocket Handler Container");
 
 
-	private WebSocketServerFactory factory;
+	private final WebSocketServerFactory factory;
 
 	private volatile List<WebSocketExtension> supportedExtensions;
 
@@ -122,7 +123,7 @@ public class JettyRequestUpgradeStrategy implements RequestUpgradeStrategy {
 
 	private List<WebSocketExtension> getWebSocketExtensions() {
 		List<WebSocketExtension> result = new ArrayList<WebSocketExtension>();
-		for(String name : this.factory.getExtensionFactory().getExtensionNames()) {
+		for (String name : this.factory.getExtensionFactory().getExtensionNames()) {
 			result.add(new WebSocketExtension(name));
 		}
 		return result;
@@ -130,7 +131,7 @@ public class JettyRequestUpgradeStrategy implements RequestUpgradeStrategy {
 
 	@Override
 	public void upgrade(ServerHttpRequest request, ServerHttpResponse response,
-			String selectedProtocol, List<WebSocketExtension> selectedExtensions,
+			String selectedProtocol, List<WebSocketExtension> selectedExtensions, Principal user,
 			WebSocketHandler wsHandler, Map<String, Object> attributes) throws HandshakeFailureException {
 
 		Assert.isInstanceOf(ServletServerHttpRequest.class, request);
@@ -141,7 +142,7 @@ public class JettyRequestUpgradeStrategy implements RequestUpgradeStrategy {
 
 		Assert.isTrue(this.factory.isUpgradeRequest(servletRequest, servletResponse), "Not a WebSocket handshake");
 
-		JettyWebSocketSession session = new JettyWebSocketSession(request.getPrincipal(), attributes);
+		JettyWebSocketSession session = new JettyWebSocketSession(attributes, user);
 		JettyWebSocketHandlerAdapter handlerAdapter = new JettyWebSocketHandlerAdapter(wsHandler, session);
 
 		WebSocketHandlerContainer container =

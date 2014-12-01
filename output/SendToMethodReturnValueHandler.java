@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,18 +17,22 @@
 package org.springframework.messaging.simp.annotation.support;
 
 import java.lang.annotation.Annotation;
+import java.security.Principal;
 
 import org.springframework.core.MethodParameter;
 import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
-import org.springframework.messaging.core.MessagePostProcessor;
+import org.springframework.messaging.MessageHeaders;
+import org.springframework.messaging.handler.DestinationPatternsMessageCondition;
 import org.springframework.messaging.handler.annotation.SendTo;
 import org.springframework.messaging.handler.invocation.HandlerMethodReturnValueHandler;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
 import org.springframework.messaging.simp.SimpMessageSendingOperations;
+import org.springframework.messaging.simp.SimpMessageType;
 import org.springframework.messaging.simp.annotation.SendToUser;
-import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.messaging.simp.user.DestinationUserNameProvider;
+import org.springframework.messaging.support.MessageHeaderInitializer;
 import org.springframework.util.Assert;
 import org.springframework.util.ObjectUtils;
 
@@ -54,6 +58,8 @@ public class SendToMethodReturnValueHandler implements HandlerMethodReturnValueH
 	private String defaultDestinationPrefix = "/topic";
 
 	private String defaultUserDestinationPrefix = "/queue";
+
+	private MessageHeaderInitializer headerInitializer;
 
 
 	public SendToMethodReturnValueHandler(SimpMessageSendingOperations messagingTemplate, boolean annotationRequired) {
@@ -99,6 +105,23 @@ public class SendToMethodReturnValueHandler implements HandlerMethodReturnValueH
 		return this.defaultUserDestinationPrefix;
 	}
 
+	/**
+	 * Configure a {@link MessageHeaderInitializer} to apply to the headers of all
+	 * messages sent to the client outbound channel.
+	 *
+	 * <p>By default this property is not set.
+	 */
+	public void setHeaderInitializer(MessageHeaderInitializer headerInitializer) {
+		this.headerInitializer = headerInitializer;
+	}
+
+	/**
+	 * @return the configured header initializer.
+	 */
+	public MessageHeaderInitializer getHeaderInitializer() {
+		return this.headerInitializer;
+	}
+
 
 	@Override
 	public boolean supportsReturnType(MethodParameter returnType) {
@@ -110,67 +133,77 @@ public class SendToMethodReturnValueHandler implements HandlerMethodReturnValueH
 	}
 
 	@Override
-	public void handleReturnValue(Object returnValue, MethodParameter returnType, Message<?> inputMessage)
-			throws Exception {
-
+	public void handleReturnValue(Object returnValue, MethodParameter returnType, Message<?> message) throws Exception {
 		if (returnValue == null) {
 			return;
 		}
-
-		SimpMessageHeaderAccessor inputHeaders = SimpMessageHeaderAccessor.wrap(inputMessage);
-
-		String sessionId = inputHeaders.getSessionId();
-		MessagePostProcessor postProcessor = new SessionHeaderPostProcessor(sessionId);
+		MessageHeaders headers = message.getHeaders();
+		String sessionId = SimpMessageHeaderAccessor.getSessionId(headers);
 
 		SendToUser sendToUser = returnType.getMethodAnnotation(SendToUser.class);
 		if (sendToUser != null) {
-			if (inputHeaders.getUser() == null) {
-				throw new MissingSessionUserException(inputMessage);
+			boolean broadcast = sendToUser.broadcast();
+			String user = getUserName(message, headers);
+			if (user == null) {
+				if (sessionId == null) {
+					throw new MissingSessionUserException(message);
+				}
+				user = sessionId;
+				broadcast = false;
 			}
-			String user = inputHeaders.getUser().getName();
-			String[] destinations = getTargetDestinations(sendToUser, inputHeaders, this.defaultUserDestinationPrefix);
+			String[] destinations = getTargetDestinations(sendToUser, message, this.defaultUserDestinationPrefix);
 			for (String destination : destinations) {
-				this.messagingTemplate.convertAndSendToUser(user, destination, returnValue, postProcessor);
+				if (broadcast) {
+					this.messagingTemplate.convertAndSendToUser(user, destination, returnValue);
+				}
+				else {
+					this.messagingTemplate.convertAndSendToUser(user, destination, returnValue, createHeaders(sessionId));
+				}
 			}
-			return;
 		}
 		else {
 			SendTo sendTo = returnType.getMethodAnnotation(SendTo.class);
-			String[] destinations = getTargetDestinations(sendTo, inputHeaders, this.defaultDestinationPrefix);
+			String[] destinations = getTargetDestinations(sendTo, message, this.defaultDestinationPrefix);
 			for (String destination : destinations) {
-				this.messagingTemplate.convertAndSend(destination, returnValue, postProcessor);
+				this.messagingTemplate.convertAndSend(destination, returnValue, createHeaders(sessionId));
 			}
 		}
 	}
 
-	protected String[] getTargetDestinations(Annotation annot, SimpMessageHeaderAccessor inputHeaders,
-			String defaultPrefix) {
+	protected String getUserName(Message<?> message, MessageHeaders headers) {
+		Principal principal = SimpMessageHeaderAccessor.getUser(headers);
+		if (principal != null) {
+			return (principal instanceof DestinationUserNameProvider ?
+					((DestinationUserNameProvider) principal).getDestinationUserName() : principal.getName());
+		}
+		return null;
+	}
 
-		if (annot != null) {
-			String[] value = (String[]) AnnotationUtils.getValue(annot);
+	protected String[] getTargetDestinations(Annotation annotation, Message<?> message, String defaultPrefix) {
+		if (annotation != null) {
+			String[] value = (String[]) AnnotationUtils.getValue(annotation);
 			if (!ObjectUtils.isEmpty(value)) {
 				return value;
 			}
 		}
-		return new String[] { defaultPrefix + inputHeaders.getDestination() };
+		String name = DestinationPatternsMessageCondition.LOOKUP_DESTINATION_HEADER;
+		String destination = (String) message.getHeaders().get(name);
+		Assert.hasText(destination, "No lookup destination header in " + message);
+
+		return (destination.startsWith("/") ?
+				new String[] {defaultPrefix + destination} : new String[] {defaultPrefix + "/" + destination});
 	}
 
-
-	private final class SessionHeaderPostProcessor implements MessagePostProcessor {
-
-		private final String sessionId;
-
-		public SessionHeaderPostProcessor(String sessionId) {
-			this.sessionId = sessionId;
+	private MessageHeaders createHeaders(String sessionId) {
+		SimpMessageHeaderAccessor headerAccessor = SimpMessageHeaderAccessor.create(SimpMessageType.MESSAGE);
+		if (getHeaderInitializer() != null) {
+			getHeaderInitializer().initHeaders(headerAccessor);
 		}
-
-		@Override
-		public Message<?> postProcessMessage(Message<?> message) {
-			SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.wrap(message);
-			headers.setSessionId(this.sessionId);
-			return MessageBuilder.withPayload(message.getPayload()).setHeaders(headers).build();
-		}
+		headerAccessor.setSessionId(sessionId);
+		headerAccessor.setLeaveMutable(true);
+		return headerAccessor.getMessageHeaders();
 	}
+
 
 	@Override
 	public String toString() {

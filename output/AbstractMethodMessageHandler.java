@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ import org.springframework.messaging.handler.DestinationPatternsMessageCondition
 import org.springframework.messaging.handler.HandlerMethod;
 import org.springframework.messaging.handler.HandlerMethodSelector;
 import org.springframework.messaging.support.MessageBuilder;
-import org.springframework.util.Assert;
+import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.util.ClassUtils;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.LinkedMultiValueMap;
@@ -70,9 +70,9 @@ public abstract class AbstractMethodMessageHandler<T>
 
 	private Collection<String> destinationPrefixes = new ArrayList<String>();
 
-	private List<HandlerMethodArgumentResolver> customArgumentResolvers = new ArrayList<HandlerMethodArgumentResolver>();
+	private final List<HandlerMethodArgumentResolver> customArgumentResolvers = new ArrayList<HandlerMethodArgumentResolver>(4);
 
-	private List<HandlerMethodReturnValueHandler> customReturnValueHandlers = new ArrayList<HandlerMethodReturnValueHandler>();
+	private final List<HandlerMethodReturnValueHandler> customReturnValueHandlers = new ArrayList<HandlerMethodReturnValueHandler>(4);
 
 	private HandlerMethodArgumentResolverComposite argumentResolvers = new HandlerMethodArgumentResolverComposite();
 
@@ -89,27 +89,26 @@ public abstract class AbstractMethodMessageHandler<T>
 
 
 	/**
-	 * Configure one or more prefixes to match to the destinations of handled messages.
-	 * Messages whose destination does not start with one of the configured prefixes
-	 * are ignored. When a destination matches one of the configured prefixes, the
-	 * matching part is removed from destination before performing a lookup for a matching
-	 * message handling method. Prefixes without a trailing slash will have one appended
-	 * automatically.
-	 * <p>By default the list of prefixes is empty in which case all destinations match.
+	 * When this property is configured only messages to destinations matching
+	 * one of the configured prefixes are eligible for handling. When there is a
+	 * match the prefix is removed and only the remaining part of the destination
+	 * is used for method-mapping purposes.
+	 * <p>By default, no prefixes are configured in which case all messages are
+	 * eligible for handling.
 	 */
 	public void setDestinationPrefixes(Collection<String> prefixes) {
 		this.destinationPrefixes.clear();
 		if (prefixes != null) {
 			for (String prefix : prefixes) {
 				prefix = prefix.trim();
-				if (!prefix.endsWith("/")) {
-					prefix += "/";
-				}
 				this.destinationPrefixes.add(prefix);
 			}
 		}
 	}
 
+	/**
+	 * Return the configured destination prefixes.
+	 */
 	public Collection<String> getDestinationPrefixes() {
 		return this.destinationPrefixes;
 	}
@@ -120,10 +119,15 @@ public abstract class AbstractMethodMessageHandler<T>
 	 * @param customArgumentResolvers the list of resolvers; never {@code null}.
 	 */
 	public void setCustomArgumentResolvers(List<HandlerMethodArgumentResolver> customArgumentResolvers) {
-		Assert.notNull(customArgumentResolvers, "The 'customArgumentResolvers' cannot be null.");
-		this.customArgumentResolvers = customArgumentResolvers;
+		this.customArgumentResolvers.clear();
+		if (customArgumentResolvers != null) {
+			this.customArgumentResolvers.addAll(customArgumentResolvers);
+		}
 	}
 
+	/**
+	 * Return the configured custom argument resolvers, if any.
+	 */
 	public List<HandlerMethodArgumentResolver> getCustomArgumentResolvers() {
 		return this.customArgumentResolvers;
 	}
@@ -134,10 +138,15 @@ public abstract class AbstractMethodMessageHandler<T>
 	 * @param customReturnValueHandlers the list of custom return value handlers, never {@code null}.
 	 */
 	public void setCustomReturnValueHandlers(List<HandlerMethodReturnValueHandler> customReturnValueHandlers) {
-		Assert.notNull(customReturnValueHandlers, "The 'customReturnValueHandlers' cannot be null.");
-		this.customReturnValueHandlers = customReturnValueHandlers;
+		this.customReturnValueHandlers.clear();
+		if (customReturnValueHandlers != null) {
+			this.customReturnValueHandlers.addAll(customReturnValueHandlers);
+		}
 	}
 
+	/**
+	 * Return the configured custom return value handlers, if any.
+	 */
 	public List<HandlerMethodReturnValueHandler> getCustomReturnValueHandlers() {
 		return this.customReturnValueHandlers;
 	}
@@ -323,36 +332,33 @@ public abstract class AbstractMethodMessageHandler<T>
 	public void handleMessage(Message<?> message) throws MessagingException {
 		String destination = getDestination(message);
 		if (destination == null) {
-			logger.trace("Ignoring message, no destination");
 			return;
 		}
-
 		String lookupDestination = getLookupDestination(destination);
 		if (lookupDestination == null) {
-			if (logger.isTraceEnabled()) {
-				logger.trace("Ignoring message to destination=" + destination);
-			}
 			return;
 		}
+		MessageHeaderAccessor headerAccessor = MessageHeaderAccessor.getMutableAccessor(message);
+		headerAccessor.setHeader(DestinationPatternsMessageCondition.LOOKUP_DESTINATION_HEADER, lookupDestination);
+		headerAccessor.setLeaveMutable(true);
+		message = MessageBuilder.createMessage(message.getPayload(), headerAccessor.getMessageHeaders());
 
 		if (logger.isDebugEnabled()) {
-			logger.debug("Handling message, lookupDestination=" + lookupDestination);
+			logger.debug("Searching methods to handle " + headerAccessor.getShortLogMessage(message.getPayload()));
 		}
 
-		message = MessageBuilder.fromMessage(message).setHeader(
-				DestinationPatternsMessageCondition.LOOKUP_DESTINATION_HEADER, lookupDestination).build();
-
 		handleMessageInternal(message, lookupDestination);
+		headerAccessor.setImmutable();
 	}
 
 	protected abstract String getDestination(Message<?> message);
 
 	/**
-	 * Find if the given destination matches any of the configured allowed destination
-	 * prefixes and if a match is found return the destination with the prefix removed.
-	 * <p>If no destination prefixes are configured, the destination is returned as is.
-	 * @return the destination to use to find matching message handling methods
-	 * or {@code null} if the destination does not match
+	 * Check whether the given destination (of an incoming message) matches to
+	 * one of the configured destination prefixes and if so return the remaining
+	 * portion of the destination after the matched prefix.
+	 * <p>If there are no matching prefixes, return {@code null}.
+	 * <p>If there are no destination prefixes, return the destination as is.
 	 */
 	protected String getLookupDestination(String destination) {
 		if (destination == null) {
@@ -363,7 +369,7 @@ public abstract class AbstractMethodMessageHandler<T>
 		}
 		for (String prefix : this.destinationPrefixes) {
 			if (destination.startsWith(prefix)) {
-				return destination.substring(prefix.length() - 1);
+				return destination.substring(prefix.length());
 			}
 		}
 		return null;
@@ -376,23 +382,20 @@ public abstract class AbstractMethodMessageHandler<T>
 		if (mappingsByUrl != null) {
 			addMatchesToCollection(mappingsByUrl, message, matches);
 		}
-
 		if (matches.isEmpty()) {
 			// No direct hits, go through all mappings
 			Set<T> allMappings = this.handlerMethods.keySet();
 			addMatchesToCollection(allMappings, message, matches);
 		}
-
 		if (matches.isEmpty()) {
 			handleNoMatch(handlerMethods.keySet(), lookupDestination, message);
 			return;
 		}
-
 		Comparator<Match> comparator = new MatchComparator(getMappingComparator(message));
 		Collections.sort(matches, comparator);
 
 		if (logger.isTraceEnabled()) {
-			logger.trace("Found " + matches.size() + " matching mapping(s) for [" + lookupDestination + "] : " + matches);
+			logger.trace("Found " + matches.size() + " methods: " + matches);
 		}
 
 		Match bestMatch = matches.get(0);
@@ -438,18 +441,14 @@ public abstract class AbstractMethodMessageHandler<T>
 
 
 	protected void handleMatch(T mapping, HandlerMethod handlerMethod, String lookupDestination, Message<?> message) {
-
 		if (logger.isDebugEnabled()) {
-			logger.debug("Message matched to " + handlerMethod);
+			logger.debug("Invoking " + handlerMethod.getShortLogMessage());
 		}
-
 		handlerMethod = handlerMethod.createWithResolvedBean();
 		InvocableHandlerMethod invocable = new InvocableHandlerMethod(handlerMethod);
 		invocable.setMessageMethodArgumentResolvers(this.argumentResolvers);
-
 		try {
 			Object returnValue = invocable.invoke(message);
-
 			MethodParameter returnType = handlerMethod.getReturnType();
 			if (void.class.equals(returnType.getParameterType())) {
 				return;
@@ -465,26 +464,27 @@ public abstract class AbstractMethodMessageHandler<T>
 	}
 
 	protected void processHandlerMethodException(HandlerMethod handlerMethod, Exception ex, Message<?> message) {
-
+		if (logger.isDebugEnabled()) {
+			logger.debug("Searching methods to handle " + ex.getClass().getSimpleName());
+		}
 		Class<?> beanType = handlerMethod.getBeanType();
 		AbstractExceptionHandlerMethodResolver resolver = this.exceptionHandlerCache.get(beanType);
 		if (resolver == null) {
 			resolver = createExceptionHandlerMethodResolverFor(beanType);
 			this.exceptionHandlerCache.put(beanType, resolver);
 		}
-
 		Method method = resolver.resolveMethod(ex);
 		if (method == null) {
 			logger.error("Unhandled exception", ex);
 			return;
 		}
-
 		InvocableHandlerMethod invocable = new InvocableHandlerMethod(handlerMethod.getBean(), method);
 		invocable.setMessageMethodArgumentResolvers(this.argumentResolvers);
-
+		if (logger.isDebugEnabled()) {
+			logger.debug("Invoking " + invocable.getShortLogMessage());
+		}
 		try {
 			Object returnValue = invocable.invoke(message, ex);
-
 			MethodParameter returnType = invocable.getReturnType();
 			if (void.class.equals(returnType.getParameterType())) {
 				return;
@@ -495,15 +495,19 @@ public abstract class AbstractMethodMessageHandler<T>
 			logger.error("Error while handling exception", t);
 			return;
 		}
-
 	}
 
 	protected abstract AbstractExceptionHandlerMethodResolver createExceptionHandlerMethodResolverFor(Class<?> beanType);
 
 	protected void handleNoMatch(Set<T> ts, String lookupDestination, Message<?> message) {
 		if (logger.isDebugEnabled()) {
-			logger.debug("No matching method found");
+			logger.debug("No matching methods.");
 		}
+	}
+
+	@Override
+	public String toString() {
+		return getClass().getSimpleName() + "[prefixes=" + getDestinationPrefixes() + "]";
 	}
 
 

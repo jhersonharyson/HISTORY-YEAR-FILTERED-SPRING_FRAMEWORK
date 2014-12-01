@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.server.ServletServerHttpRequest;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.Errors;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.accept.ContentNegotiationManager;
@@ -73,6 +74,13 @@ public class RequestResponseBodyMethodProcessor extends AbstractMessageConverter
 		super(messageConverters, contentNegotiationManager);
 	}
 
+	public RequestResponseBodyMethodProcessor(List<HttpMessageConverter<?>> messageConverters,
+			ContentNegotiationManager contentNegotiationManager, List<Object> responseBodyAdvice) {
+
+		super(messageConverters, contentNegotiationManager, responseBodyAdvice);
+	}
+
+
 	@Override
 	public boolean supportsParameter(MethodParameter parameter) {
 		return parameter.hasParameterAnnotation(RequestBody.class);
@@ -80,12 +88,11 @@ public class RequestResponseBodyMethodProcessor extends AbstractMessageConverter
 
 	@Override
 	public boolean supportsReturnType(MethodParameter returnType) {
-		return ((AnnotationUtils.findAnnotation(returnType.getContainingClass(), ResponseBody.class) != null) ||
-				(returnType.getMethodAnnotation(ResponseBody.class) != null));
+		return (AnnotationUtils.findAnnotation(returnType.getContainingClass(), ResponseBody.class) != null ||
+				returnType.getMethodAnnotation(ResponseBody.class) != null);
 	}
 
 	/**
-	 * {@inheritDoc}
 	 * @throws MethodArgumentNotValidException if validation fails
 	 * @throws HttpMessageNotReadableException if {@link RequestBody#required()}
 	 * is {@code true} and there is no body content or if there is no suitable
@@ -96,26 +103,23 @@ public class RequestResponseBodyMethodProcessor extends AbstractMessageConverter
 			NativeWebRequest webRequest, WebDataBinderFactory binderFactory) throws Exception {
 
 		Object argument = readWithMessageConverters(webRequest, parameter, parameter.getGenericParameterType());
-
 		String name = Conventions.getVariableNameForParameter(parameter);
 		WebDataBinder binder = binderFactory.createBinder(webRequest, argument, name);
-
 		if (argument != null) {
 			validate(binder, parameter);
 		}
-
 		mavContainer.addAttribute(BindingResult.MODEL_KEY_PREFIX + name, binder.getBindingResult());
-
 		return argument;
 	}
 
-	private void validate(WebDataBinder binder, MethodParameter parameter) throws Exception, MethodArgumentNotValidException {
-
+	private void validate(WebDataBinder binder, MethodParameter parameter) throws Exception {
 		Annotation[] annotations = parameter.getParameterAnnotations();
-		for (Annotation annot : annotations) {
-			if (annot.annotationType().getSimpleName().startsWith("Valid")) {
-				Object hints = AnnotationUtils.getValue(annot);
-				binder.validate(hints instanceof Object[] ? (Object[]) hints : new Object[] {hints});
+		for (Annotation ann : annotations) {
+			Validated validatedAnn = AnnotationUtils.getAnnotation(ann, Validated.class);
+			if (validatedAnn != null || ann.annotationType().getSimpleName().startsWith("Valid")) {
+				Object hints = (validatedAnn != null ? validatedAnn.value() : AnnotationUtils.getValue(ann));
+				Object[] validationHints = (hints instanceof Object[] ? (Object[]) hints : new Object[] {hints});
+				binder.validate(validationHints);
 				BindingResult bindingResult = binder.getBindingResult();
 				if (bindingResult.hasErrors()) {
 					if (isBindExceptionRequired(binder, parameter)) {
@@ -148,39 +152,43 @@ public class RequestResponseBodyMethodProcessor extends AbstractMessageConverter
 		final HttpServletRequest servletRequest = webRequest.getNativeRequest(HttpServletRequest.class);
 		HttpInputMessage inputMessage = new ServletServerHttpRequest(servletRequest);
 
-		RequestBody annot = methodParam.getParameterAnnotation(RequestBody.class);
-		if (!annot.required()) {
-			InputStream inputStream = inputMessage.getBody();
-			if (inputStream == null) {
-				return null;
+		InputStream inputStream = inputMessage.getBody();
+		if (inputStream == null) {
+			return handleEmptyBody(methodParam);
+		}
+		else if (inputStream.markSupported()) {
+			inputStream.mark(1);
+			if (inputStream.read() == -1) {
+				return handleEmptyBody(methodParam);
 			}
-			else if (inputStream.markSupported()) {
-				inputStream.mark(1);
-				if (inputStream.read() == -1) {
-					return null;
-				}
-				inputStream.reset();
+			inputStream.reset();
+		}
+		else {
+			final PushbackInputStream pushbackInputStream = new PushbackInputStream(inputStream);
+			int b = pushbackInputStream.read();
+			if (b == -1) {
+				return handleEmptyBody(methodParam);
 			}
 			else {
-				final PushbackInputStream pushbackInputStream = new PushbackInputStream(inputStream);
-				int b = pushbackInputStream.read();
-				if (b == -1) {
-					return null;
-				}
-				else {
-					pushbackInputStream.unread(b);
-				}
-				inputMessage = new ServletServerHttpRequest(servletRequest) {
-					@Override
-					public InputStream getBody() throws IOException {
-						// Form POST should not get here
-						return pushbackInputStream;
-					}
-				};
+				pushbackInputStream.unread(b);
 			}
+			inputMessage = new ServletServerHttpRequest(servletRequest) {
+				@Override
+				public InputStream getBody() throws IOException {
+					// Form POST should not get here
+					return pushbackInputStream;
+				}
+			};
 		}
 
 		return super.readWithMessageConverters(inputMessage, methodParam, paramType);
+	}
+
+	private Object handleEmptyBody(MethodParameter param) {
+		if (param.getParameterAnnotation(RequestBody.class).required()) {
+			throw new HttpMessageNotReadableException("Required request body content is missing: " + param);
+		}
+		return null;
 	}
 
 	@Override
@@ -189,9 +197,9 @@ public class RequestResponseBodyMethodProcessor extends AbstractMessageConverter
 			throws IOException, HttpMediaTypeNotAcceptableException {
 
 		mavContainer.setRequestHandled(true);
-		if (returnValue != null) {
-			writeWithMessageConverters(returnValue, returnType, webRequest);
-		}
+
+		// Try even with null return value. ResponseBodyAdvice could get involved.
+		writeWithMessageConverters(returnValue, returnType, webRequest);
 	}
 
 }

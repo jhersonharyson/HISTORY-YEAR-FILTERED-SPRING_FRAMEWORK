@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,6 +26,7 @@ import java.util.Map;
 
 import org.eclipse.jetty.websocket.api.Session;
 import org.eclipse.jetty.websocket.api.extensions.ExtensionConfig;
+
 import org.springframework.http.HttpHeaders;
 import org.springframework.util.ObjectUtils;
 import org.springframework.web.socket.BinaryMessage;
@@ -46,51 +47,75 @@ import org.springframework.web.socket.adapter.AbstractWebSocketSession;
  */
 public class JettyWebSocketSession extends AbstractWebSocketSession<Session> {
 
+	private String id;
+
+	private URI uri;
+
 	private HttpHeaders headers;
+
+	private String acceptedProtocol;
 
 	private List<WebSocketExtension> extensions;
 
-	private final Principal principal;
+	private Principal user;
 
 
 	/**
 	 * Create a new {@link JettyWebSocketSession} instance.
-	 * @param principal the user associated with the session, or {@code null}
-	 * @param handshakeAttributes attributes from the HTTP handshake to make available
-	 *        through the WebSocket session
+	 *
+	 * @param attributes attributes from the HTTP handshake to associate with the WebSocket session
 	 */
-	public JettyWebSocketSession(Principal principal, Map<String, Object> handshakeAttributes) {
-		super(handshakeAttributes);
-		this.principal = principal;
+	public JettyWebSocketSession(Map<String, Object> attributes) {
+		this(attributes, null);
+	}
+
+	/**
+	 * Create a new {@link JettyWebSocketSession} instance associated with the given user.
+	 *
+	 * @param attributes attributes from the HTTP handshake to associate with the WebSocket
+	 * session; the provided attributes are copied, the original map is not used.
+	 * @param user the user associated with the session; if {@code null} we'll fallback on the user
+	 *  available via {@link org.eclipse.jetty.websocket.api.Session#getUpgradeRequest()}
+	 */
+	public JettyWebSocketSession(Map<String, Object> attributes, Principal user) {
+		super(attributes);
+		this.user = user;
 	}
 
 
 	@Override
 	public String getId() {
 		checkNativeSessionInitialized();
-		return ObjectUtils.getIdentityHexString(getNativeSession());
+		return this.id;
 	}
 
 	@Override
 	public URI getUri() {
 		checkNativeSessionInitialized();
-		return getNativeSession().getUpgradeRequest().getRequestURI();
+		return this.uri;
 	}
 
 	@Override
 	public HttpHeaders getHandshakeHeaders() {
 		checkNativeSessionInitialized();
-		if (this.headers == null) {
-			this.headers = new HttpHeaders();
-			this.headers.putAll(getNativeSession().getUpgradeRequest().getHeaders());
-			this.headers = HttpHeaders.readOnlyHttpHeaders(headers);
-		}
 		return this.headers;
 	}
 
 	@Override
+	public String getAcceptedProtocol() {
+		checkNativeSessionInitialized();
+		return this.acceptedProtocol;
+	}
+
+	@Override
+	public List<WebSocketExtension> getExtensions() {
+		checkNativeSessionInitialized();
+		return this.extensions;
+	}
+
+	@Override
 	public Principal getPrincipal() {
-		return this.principal;
+		return this.user;
 	}
 
 	@Override
@@ -106,27 +131,56 @@ public class JettyWebSocketSession extends AbstractWebSocketSession<Session> {
 	}
 
 	@Override
-	public String getAcceptedProtocol() {
+	public void setTextMessageSizeLimit(int messageSizeLimit) {
 		checkNativeSessionInitialized();
-		return getNativeSession().getUpgradeResponse().getAcceptedSubProtocol();
+		getNativeSession().getPolicy().setMaxTextMessageSize(messageSizeLimit);
 	}
 
 	@Override
-	public List<WebSocketExtension> getExtensions() {
+	public int getTextMessageSizeLimit() {
 		checkNativeSessionInitialized();
-		if(this.extensions == null) {
-			List<ExtensionConfig> source = getNativeSession().getUpgradeResponse().getExtensions();
-			this.extensions = new ArrayList<WebSocketExtension>(source.size());
-			for(ExtensionConfig e : source) {
-				this.extensions.add(new WebSocketExtension(e.getName(), e.getParameters()));
-			}
-		}
-		return this.extensions;
+		return getNativeSession().getPolicy().getMaxTextMessageSize();
+	}
+
+	@Override
+	public void setBinaryMessageSizeLimit(int messageSizeLimit) {
+		checkNativeSessionInitialized();
+		getNativeSession().getPolicy().setMaxBinaryMessageSize(messageSizeLimit);
+	}
+
+	@Override
+	public int getBinaryMessageSizeLimit() {
+		checkNativeSessionInitialized();
+		return getNativeSession().getPolicy().getMaxBinaryMessageSize();
 	}
 
 	@Override
 	public boolean isOpen() {
 		return ((getNativeSession() != null) && getNativeSession().isOpen());
+	}
+
+	@Override
+	public void initializeNativeSession(Session session) {
+		super.initializeNativeSession(session);
+
+		this.id = ObjectUtils.getIdentityHexString(getNativeSession());
+		this.uri = session.getUpgradeRequest().getRequestURI();
+
+		this.headers = new HttpHeaders();
+		this.headers.putAll(getNativeSession().getUpgradeRequest().getHeaders());
+		this.headers = HttpHeaders.readOnlyHttpHeaders(headers);
+
+		this.acceptedProtocol = session.getUpgradeResponse().getAcceptedSubProtocol();
+
+		List<ExtensionConfig> source = getNativeSession().getUpgradeResponse().getExtensions();
+		this.extensions = new ArrayList<WebSocketExtension>(source.size());
+		for (ExtensionConfig ec : source) {
+			this.extensions.add(new WebSocketExtension(ec.getName(), ec.getParameters()));
+		}
+
+		if (this.user == null) {
+			this.user = session.getUpgradeRequest().getUserPrincipal();
+		}
 	}
 
 	@Override

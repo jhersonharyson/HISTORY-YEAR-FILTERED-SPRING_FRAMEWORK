@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.context.ApplicationContext;
 import org.springframework.messaging.simp.user.UserSessionRegistry;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.util.Assert;
@@ -29,15 +30,17 @@ import org.springframework.web.HttpRequestHandler;
 import org.springframework.web.servlet.handler.AbstractHandlerMapping;
 import org.springframework.web.servlet.handler.SimpleUrlHandlerMapping;
 import org.springframework.web.socket.WebSocketHandler;
+import org.springframework.web.socket.handler.WebSocketHandlerDecorator;
 import org.springframework.web.socket.messaging.StompSubProtocolHandler;
 import org.springframework.web.socket.messaging.SubProtocolWebSocketHandler;
-import org.springframework.web.socket.handler.WebSocketHandlerDecorator;
+import org.springframework.web.util.UrlPathHelper;
 
 /**
  * A registry for STOMP over WebSocket endpoints that maps the endpoints with a
  * {@link SimpleUrlHandlerMapping} for use in Spring MVC.
  *
  * @author Rossen Stoyanchev
+ * @author Artem Bilan
  * @since 4.0
  */
 public class WebMvcStompEndpointRegistry implements StompEndpointRegistry {
@@ -55,34 +58,52 @@ public class WebMvcStompEndpointRegistry implements StompEndpointRegistry {
 
 	private int order = 1;
 
+	private UrlPathHelper urlPathHelper;
+
 
 	public WebMvcStompEndpointRegistry(WebSocketHandler webSocketHandler,
+			WebSocketTransportRegistration transportRegistration,
 			UserSessionRegistry userSessionRegistry, TaskScheduler defaultSockJsTaskScheduler) {
 
-		Assert.notNull(webSocketHandler);
-		Assert.notNull(userSessionRegistry);
+		Assert.notNull(webSocketHandler, "'webSocketHandler' is required ");
+		Assert.notNull(transportRegistration, "'transportRegistration' is required");
+		Assert.notNull(userSessionRegistry, "'userSessionRegistry' is required");
 
 		this.webSocketHandler = webSocketHandler;
 		this.subProtocolWebSocketHandler = unwrapSubProtocolWebSocketHandler(webSocketHandler);
+
+		if (transportRegistration.getSendTimeLimit() != null) {
+			this.subProtocolWebSocketHandler.setSendTimeLimit(transportRegistration.getSendTimeLimit());
+		}
+		if (transportRegistration.getSendBufferSizeLimit() != null) {
+			this.subProtocolWebSocketHandler.setSendBufferSizeLimit(transportRegistration.getSendBufferSizeLimit());
+		}
+
 		this.stompHandler = new StompSubProtocolHandler();
 		this.stompHandler.setUserSessionRegistry(userSessionRegistry);
+
+		if (transportRegistration.getMessageSizeLimit() != null) {
+			this.stompHandler.setMessageSizeLimit(transportRegistration.getMessageSizeLimit());
+		}
+
 		this.sockJsScheduler = defaultSockJsTaskScheduler;
 	}
 
-	private static SubProtocolWebSocketHandler unwrapSubProtocolWebSocketHandler(WebSocketHandler webSocketHandler) {
-		WebSocketHandler actual = (webSocketHandler instanceof WebSocketHandlerDecorator) ?
-				((WebSocketHandlerDecorator) webSocketHandler).getLastHandler() : webSocketHandler;
-		Assert.isInstanceOf(SubProtocolWebSocketHandler.class, actual,
-						"No SubProtocolWebSocketHandler found: " + webSocketHandler);
+	private static SubProtocolWebSocketHandler unwrapSubProtocolWebSocketHandler(WebSocketHandler wsHandler) {
+		WebSocketHandler actual = WebSocketHandlerDecorator.unwrap(wsHandler);
+		Assert.isInstanceOf(SubProtocolWebSocketHandler.class, actual, "No SubProtocolWebSocketHandler in " + wsHandler);
 		return (SubProtocolWebSocketHandler) actual;
 	}
 
+	protected void setApplicationContext(ApplicationContext applicationContext) {
+		this.stompHandler.setApplicationEventPublisher(applicationContext);
+	}
 
 	@Override
 	public StompWebSocketEndpointRegistration addEndpoint(String... paths) {
 		this.subProtocolWebSocketHandler.addProtocolHandler(this.stompHandler);
-		WebMvcStompWebSocketEndpointRegistration registration = new WebMvcStompWebSocketEndpointRegistration(
-				paths, this.webSocketHandler, this.sockJsScheduler);
+		WebMvcStompWebSocketEndpointRegistration registration =
+				new WebMvcStompWebSocketEndpointRegistration(paths, this.webSocketHandler, this.sockJsScheduler);
 		this.registrations.add(registration);
 		return registration;
 	}
@@ -101,6 +122,18 @@ public class WebMvcStompEndpointRegistry implements StompEndpointRegistry {
 	}
 
 	/**
+	 * Set the UrlPathHelper to configure on the {@code SimpleUrlHandlerMapping}
+	 * used to map handshake requests.
+	 */
+	public void setUrlPathHelper(UrlPathHelper urlPathHelper) {
+		this.urlPathHelper = urlPathHelper;
+	}
+
+	public UrlPathHelper getUrlPathHelper() {
+		return this.urlPathHelper;
+	}
+
+	/**
 	 * Return a handler mapping with the mapped ViewControllers; or {@code null} in case of no registrations.
 	 */
 	public AbstractHandlerMapping getHandlerMapping() {
@@ -116,6 +149,9 @@ public class WebMvcStompEndpointRegistry implements StompEndpointRegistry {
 		SimpleUrlHandlerMapping hm = new SimpleUrlHandlerMapping();
 		hm.setUrlMap(urlMap);
 		hm.setOrder(this.order);
+		if (this.urlPathHelper != null) {
+			hm.setUrlPathHelper(this.urlPathHelper);
+		}
 		return hm;
 	}
 

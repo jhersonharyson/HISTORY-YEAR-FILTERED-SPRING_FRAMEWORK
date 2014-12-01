@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ import java.util.Set;
 
 import org.junit.Before;
 import org.junit.Test;
+
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -59,6 +60,7 @@ public class RestTemplateTests {
 
 	private ResponseErrorHandler errorHandler;
 
+	@SuppressWarnings("rawtypes")
 	private HttpMessageConverter converter;
 
 	@Before
@@ -68,9 +70,9 @@ public class RestTemplateTests {
 		response = mock(ClientHttpResponse.class);
 		errorHandler = mock(ResponseErrorHandler.class);
 		converter = mock(HttpMessageConverter.class);
-		template = new RestTemplate(requestFactory);
+		template = new RestTemplate(Collections.<HttpMessageConverter<?>>singletonList(converter));
+		template.setRequestFactory(requestFactory);
 		template.setErrorHandler(errorHandler);
-		template.setMessageConverters(Collections.<HttpMessageConverter<?>>singletonList(converter));
 	}
 
 	@Test
@@ -640,6 +642,7 @@ public class RestTemplateTests {
 	}
 
 	@Test
+	@SuppressWarnings("rawtypes")
 	public void exchangeParameterizedType() throws Exception {
 		GenericHttpMessageConverter converter = mock(GenericHttpMessageConverter.class);
 		template.setMessageConverters(Collections.<HttpMessageConverter<?>>singletonList(converter));

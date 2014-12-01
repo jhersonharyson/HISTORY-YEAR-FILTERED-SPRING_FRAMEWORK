@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,12 +16,17 @@
 
 package org.springframework.messaging.simp.annotation.support;
 
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
+
 import org.springframework.context.support.StaticApplicationContext;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
@@ -29,7 +34,12 @@ import org.springframework.messaging.SubscribableChannel;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Headers;
+import org.springframework.messaging.handler.annotation.MessageExceptionHandler;
 import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.messaging.handler.annotation.support.MethodArgumentNotValidException;
+import org.springframework.messaging.simp.SimpAttributes;
+import org.springframework.messaging.simp.SimpAttributesContextHolder;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
 import org.springframework.messaging.simp.SimpMessageSendingOperations;
 import org.springframework.messaging.simp.SimpMessageType;
@@ -37,15 +47,24 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.messaging.simp.annotation.SubscribeMapping;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.stereotype.Controller;
+import org.springframework.util.AntPathMatcher;
+import org.springframework.validation.Errors;
+import org.springframework.validation.Validator;
+import org.springframework.validation.annotation.Validated;
 
+import static org.hamcrest.Matchers.*;
 import static org.junit.Assert.*;
 
 /**
- * Test fixture for {@link org.springframework.messaging.simp.annotation.support.SimpAnnotationMethodMessageHandler}.
+ * Test fixture for
+ * {@link org.springframework.messaging.simp.annotation.support.SimpAnnotationMethodMessageHandler}.
+ *
  * @author Rossen Stoyanchev
  * @author Brian Clozel
  */
 public class SimpAnnotationMethodMessageHandlerTests {
+
+	private static final String TEST_INVALID_VALUE = "invalidValue";
 
 	private TestSimpAnnotationMethodMessageHandler messageHandler;
 
@@ -56,19 +75,23 @@ public class SimpAnnotationMethodMessageHandlerTests {
 	public void setup() {
 		SubscribableChannel channel = Mockito.mock(SubscribableChannel.class);
 		SimpMessageSendingOperations brokerTemplate = new SimpMessagingTemplate(channel);
+
 		this.messageHandler = new TestSimpAnnotationMethodMessageHandler(brokerTemplate, channel, channel);
 		this.messageHandler.setApplicationContext(new StaticApplicationContext());
+		this.messageHandler.setValidator(new StringTestValidator(TEST_INVALID_VALUE));
 		this.messageHandler.afterPropertiesSet();
 
 		testController = new TestController();
-		this.messageHandler.registerHandler(testController);
+		this.messageHandler.registerHandler(this.testController);
 	}
 
 
-	@SuppressWarnings("unchecked")
 	@Test
+	@SuppressWarnings("unchecked")
 	public void headerArgumentResolution() {
 		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create();
+		headers.setSessionId("session1");
+		headers.setSessionAttributes(new ConcurrentHashMap<>());
 		headers.setDestination("/pre/headers");
 		headers.setHeader("foo", "bar");
 		Message<?> message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
@@ -79,14 +102,40 @@ public class SimpAnnotationMethodMessageHandlerTests {
 		assertEquals("bar", ((Map<String, Object>) this.testController.arguments.get("headers")).get("foo"));
 	}
 
-	@Test(expected=IllegalStateException.class)
-	public void duplicateMappings() {
-		this.messageHandler.registerHandler(new DuplicateMappingController());
+	@Test
+	public void optionalHeaderArgumentResolutionWhenPresent() {
+		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create();
+		headers.setSessionId("session1");
+		headers.setSessionAttributes(new ConcurrentHashMap<>());
+		headers.setDestination("/pre/optionalHeaders");
+		headers.setHeader("foo", "bar");
+		Message<?> message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
+		this.messageHandler.handleMessage(message);
+
+		assertEquals("optionalHeaders", this.testController.method);
+		assertEquals("bar", this.testController.arguments.get("foo1"));
+		assertEquals("bar", this.testController.arguments.get("foo2"));
+	}
+
+	@Test
+	public void optionalHeaderArgumentResolutionWhenNotPresent() {
+		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create();
+		headers.setSessionId("session1");
+		headers.setSessionAttributes(new ConcurrentHashMap<>());
+		headers.setDestination("/pre/optionalHeaders");
+		Message<?> message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
+		this.messageHandler.handleMessage(message);
+
+		assertEquals("optionalHeaders", this.testController.method);
+		assertNull(this.testController.arguments.get("foo1"));
+		assertNull(this.testController.arguments.get("foo2"));
 	}
 
 	@Test
 	public void messageMappingDestinationVariableResolution() {
 		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create();
+		headers.setSessionId("session1");
+		headers.setSessionAttributes(new ConcurrentHashMap<>());
 		headers.setDestination("/pre/message/bar/value");
 		Message<?> message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
 		this.messageHandler.handleMessage(message);
@@ -99,9 +148,10 @@ public class SimpAnnotationMethodMessageHandlerTests {
 	@Test
 	public void subscribeEventDestinationVariableResolution() {
 		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create(SimpMessageType.SUBSCRIBE);
+		headers.setSessionId("session1");
+		headers.setSessionAttributes(new ConcurrentHashMap<>());
 		headers.setDestination("/pre/sub/bar/value");
-		Message<?> message = MessageBuilder.withPayload(new byte[0])
-				.copyHeaders(headers.toMap()).build();
+		Message<?> message = MessageBuilder.withPayload(new byte[0]).copyHeaders(headers.toMap()).build();
 		this.messageHandler.handleMessage(message);
 
 		assertEquals("subscribeEventDestinationVariable", this.testController.method);
@@ -110,29 +160,10 @@ public class SimpAnnotationMethodMessageHandlerTests {
 	}
 
 	@Test
-	public void antPatchMatchWildcard() {
-		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create();
-		headers.setDestination("/pre/pathmatch/wildcard/test");
-		Message<?> message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
-		this.messageHandler.handleMessage(message);
-
-		assertEquals("pathMatchWildcard", this.testController.method);
-	}
-
-	@Test
-	public void bestMatchWildcard() {
-		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create(SimpMessageType.MESSAGE);
-		headers.setDestination("/pre/bestmatch/bar/path");
-		Message<?> message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
-		this.messageHandler.handleMessage(message);
-
-		assertEquals("bestMatch", this.testController.method);
-		assertEquals("bar", this.testController.arguments.get("foo"));
-	}
-
-	@Test
 	public void simpleBinding() {
 		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create();
+		headers.setSessionId("session1");
+		headers.setSessionAttributes(new ConcurrentHashMap<>());
 		headers.setDestination("/pre/binding/id/12");
 		Message<?> message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
 		this.messageHandler.handleMessage(message);
@@ -140,6 +171,58 @@ public class SimpAnnotationMethodMessageHandlerTests {
 		assertEquals("simpleBinding", this.testController.method);
 		assertTrue("should be bound to type long", this.testController.arguments.get("id") instanceof Long);
 		assertEquals(12L, this.testController.arguments.get("id"));
+	}
+
+	@Test
+	public void validationError() {
+		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create();
+		headers.setSessionId("session1");
+		headers.setSessionAttributes(new ConcurrentHashMap<>());
+		headers.setDestination("/pre/validation/payload");
+		Message<?> message = MessageBuilder.withPayload(TEST_INVALID_VALUE.getBytes()).setHeaders(headers).build();
+		this.messageHandler.handleMessage(message);
+		assertEquals("handleValidationException", this.testController.method);
+	}
+
+	@Test
+	public void simpScope() {
+		Map<String, Object> map = new ConcurrentHashMap<>();
+		map.put("name", "value");
+		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create();
+		headers.setSessionId("session1");
+		headers.setSessionAttributes(map);
+		headers.setDestination("/pre/scope");
+		Message<?> message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
+		this.messageHandler.handleMessage(message);
+
+		assertEquals("scope", this.testController.method);
+	}
+
+	@Test
+	public void dotPathSeparator() {
+		DotPathSeparatorController controller = new DotPathSeparatorController();
+
+		this.messageHandler.setPathMatcher(new AntPathMatcher("."));
+		this.messageHandler.registerHandler(controller);
+		this.messageHandler.setDestinationPrefixes(Arrays.asList("/app1", "/app2/"));
+
+		SimpMessageHeaderAccessor headers = SimpMessageHeaderAccessor.create();
+		headers.setSessionId("session1");
+		headers.setSessionAttributes(new HashMap<>());
+		headers.setDestination("/app1/pre.foo");
+		Message<?> message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
+		this.messageHandler.handleMessage(message);
+
+		assertEquals("handleFoo", controller.method);
+
+		headers = SimpMessageHeaderAccessor.create();
+		headers.setSessionId("session1");
+		headers.setSessionAttributes(new HashMap<>());
+		headers.setDestination("/app2/pre.foo");
+		message = MessageBuilder.withPayload(new byte[0]).setHeaders(headers).build();
+		this.messageHandler.handleMessage(message);
+
+		assertEquals("handleFoo", controller.method);
 	}
 
 
@@ -165,12 +248,18 @@ public class SimpAnnotationMethodMessageHandlerTests {
 
 		private Map<String, Object> arguments = new LinkedHashMap<String, Object>();
 
-
 		@MessageMapping("/headers")
 		public void headers(@Header String foo, @Headers Map<String, Object> headers) {
 			this.method = "headers";
 			this.arguments.put("foo", foo);
 			this.arguments.put("headers", headers);
+		}
+
+		@MessageMapping("/optionalHeaders")
+		public void optionalHeaders(@Header(value="foo", required=false) String foo1, @Header(value="foo") Optional<String> foo2) {
+			this.method = "optionalHeaders";
+			this.arguments.put("foo1", foo1);
+			this.arguments.put("foo2", (foo2.isPresent() ? foo2.get() : null));
 		}
 
 		@MessageMapping("/message/{foo}/{name}")
@@ -189,37 +278,64 @@ public class SimpAnnotationMethodMessageHandlerTests {
 			this.arguments.put("name", param2);
 		}
 
-		@MessageMapping("/pathmatch/wildcard/**")
-		public void pathMatchWildcard() {
-			this.method = "pathMatchWildcard";
-		}
-
-		@MessageMapping("/bestmatch/{foo}/path")
-		public void bestMatch(@DestinationVariable("foo") String param1) {
-			this.method = "bestMatch";
-			this.arguments.put("foo", param1);
-		}
-
-		@MessageMapping("/bestmatch/*/*")
-		public void secondBestMatch() {
-			this.method = "secondBestMatch";
-		}
-
 		@MessageMapping("/binding/id/{id}")
 		public void simpleBinding(@DestinationVariable("id") Long id) {
 			this.method = "simpleBinding";
 			this.arguments.put("id", id);
 		}
+
+		@MessageMapping("/validation/payload")
+		public void payloadValidation(@Validated @Payload String payload) {
+			this.method = "payloadValidation";
+			this.arguments.put("message", payload);
+		}
+
+		@MessageExceptionHandler(MethodArgumentNotValidException.class)
+		public void handleValidationException() {
+			this.method = "handleValidationException";
+		}
+
+		@MessageMapping("/scope")
+		public void scope() {
+			SimpAttributes simpAttributes = SimpAttributesContextHolder.currentAttributes();
+			assertThat(simpAttributes.getAttribute("name"), is("value"));
+			this.method = "scope";
+		}
 	}
 
 	@Controller
-	private static class DuplicateMappingController {
+	@MessageMapping("pre")
+	private static class DotPathSeparatorController {
 
-		@MessageMapping(value="/duplicate")
-		public void handle1() { }
+		private String method;
 
-		@MessageMapping(value="/duplicate")
-		public void handle2() { }
+
+		@MessageMapping("foo")
+		public void handleFoo() {
+			this.method = "handleFoo";
+		}
+	}
+
+
+	private static class StringTestValidator implements Validator {
+
+		private final String invalidValue;
+
+		private StringTestValidator(String invalidValue) {
+			this.invalidValue = invalidValue;
+		}
+
+		@Override
+		public boolean supports(Class<?> clazz) {
+			return String.class.isAssignableFrom(clazz);
+		}
+		@Override
+		public void validate(Object target, Errors errors) {
+			String value = (String) target;
+			if (invalidValue.equals(value)) {
+				errors.reject("invalid value '"+invalidValue+"'");
+			}
+		}
 	}
 
 }

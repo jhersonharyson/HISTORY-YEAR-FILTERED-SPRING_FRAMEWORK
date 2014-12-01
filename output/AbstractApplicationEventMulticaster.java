@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,12 +23,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.beans.factory.BeanClassLoaderAware;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
+import org.springframework.beans.factory.config.ConfigurableBeanFactory;
 import org.springframework.context.ApplicationEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.core.OrderComparator;
+import org.springframework.util.ClassUtils;
 import org.springframework.util.ObjectUtils;
 
 /**
@@ -50,12 +53,15 @@ import org.springframework.util.ObjectUtils;
  * @see #getApplicationListeners(ApplicationEvent)
  * @see SimpleApplicationEventMulticaster
  */
-public abstract class AbstractApplicationEventMulticaster implements ApplicationEventMulticaster, BeanFactoryAware {
+public abstract class AbstractApplicationEventMulticaster
+		implements ApplicationEventMulticaster, BeanClassLoaderAware, BeanFactoryAware {
 
 	private final ListenerRetriever defaultRetriever = new ListenerRetriever(false);
 
 	private final Map<ListenerCacheKey, ListenerRetriever> retrieverCache =
 			new ConcurrentHashMap<ListenerCacheKey, ListenerRetriever>(64);
+
+	private ClassLoader beanClassLoader;
 
 	private BeanFactory beanFactory;
 
@@ -102,8 +108,16 @@ public abstract class AbstractApplicationEventMulticaster implements Application
 	}
 
 	@Override
-	public final void setBeanFactory(BeanFactory beanFactory) {
+	public void setBeanClassLoader(ClassLoader classLoader) {
+		this.beanClassLoader = classLoader;
+	}
+
+	@Override
+	public void setBeanFactory(BeanFactory beanFactory) {
 		this.beanFactory = beanFactory;
+		if (this.beanClassLoader == null && beanFactory instanceof ConfigurableBeanFactory) {
+			this.beanClassLoader = ((ConfigurableBeanFactory) beanFactory).getBeanClassLoader();
+		}
 	}
 
 	private BeanFactory getBeanFactory() {
@@ -135,49 +149,105 @@ public abstract class AbstractApplicationEventMulticaster implements Application
 	 * @see org.springframework.context.ApplicationListener
 	 */
 	protected Collection<ApplicationListener<?>> getApplicationListeners(ApplicationEvent event) {
-		Class<? extends ApplicationEvent> eventType = event.getClass();
 		Object source = event.getSource();
 		Class<?> sourceType = (source != null ? source.getClass() : null);
-		ListenerCacheKey cacheKey = new ListenerCacheKey(eventType, sourceType);
+		ListenerCacheKey cacheKey = new ListenerCacheKey(event.getClass(), sourceType);
+
+		// Quick check for existing entry on ConcurrentHashMap...
 		ListenerRetriever retriever = this.retrieverCache.get(cacheKey);
 		if (retriever != null) {
 			return retriever.getApplicationListeners();
 		}
-		else {
-			retriever = new ListenerRetriever(true);
-			LinkedList<ApplicationListener<?>> allListeners = new LinkedList<ApplicationListener<?>>();
-			Set<ApplicationListener<?>> listeners;
-			Set<String> listenerBeans;
+
+		if (this.beanClassLoader == null ||
+				(ClassUtils.isCacheSafe(event.getClass(), this.beanClassLoader) &&
+						(sourceType == null || ClassUtils.isCacheSafe(sourceType, this.beanClassLoader)))) {
+			// Fully synchronized building and caching of a ListenerRetriever
 			synchronized (this.defaultRetriever) {
-				listeners = new LinkedHashSet<ApplicationListener<?>>(this.defaultRetriever.applicationListeners);
-				listenerBeans = new LinkedHashSet<String>(this.defaultRetriever.applicationListenerBeans);
-			}
-			for (ApplicationListener<?> listener : listeners) {
-				if (supportsEvent(listener, eventType, sourceType)) {
-					retriever.applicationListeners.add(listener);
-					allListeners.add(listener);
+				retriever = this.retrieverCache.get(cacheKey);
+				if (retriever != null) {
+					return retriever.getApplicationListeners();
 				}
+				retriever = new ListenerRetriever(true);
+				Collection<ApplicationListener<?>> listeners = retrieveApplicationListeners(event, sourceType, retriever);
+				this.retrieverCache.put(cacheKey, retriever);
+				return listeners;
 			}
-			if (!listenerBeans.isEmpty()) {
-				BeanFactory beanFactory = getBeanFactory();
-				for (String listenerBeanName : listenerBeans) {
-					try {
-						ApplicationListener<?> listener = beanFactory.getBean(listenerBeanName, ApplicationListener.class);
-						if (!allListeners.contains(listener) && supportsEvent(listener, eventType, sourceType)) {
-							retriever.applicationListenerBeans.add(listenerBeanName);
+		}
+		else {
+			// No ListenerRetriever caching -> no synchronization necessary
+			return retrieveApplicationListeners(event, sourceType, null);
+		}
+	}
+
+	/**
+	 * Actually retrieve the application listeners for the given event and source type.
+	 * @param event the application event
+	 * @param sourceType the event source type
+	 * @param retriever the ListenerRetriever, if supposed to populate one (for caching purposes)
+	 * @return the pre-filtered list of application listeners for the given event and source type
+	 */
+	private Collection<ApplicationListener<?>> retrieveApplicationListeners(
+			ApplicationEvent event, Class<?> sourceType, ListenerRetriever retriever) {
+
+		LinkedList<ApplicationListener<?>> allListeners = new LinkedList<ApplicationListener<?>>();
+		Set<ApplicationListener<?>> listeners;
+		Set<String> listenerBeans;
+		synchronized (this.defaultRetriever) {
+			listeners = new LinkedHashSet<ApplicationListener<?>>(this.defaultRetriever.applicationListeners);
+			listenerBeans = new LinkedHashSet<String>(this.defaultRetriever.applicationListenerBeans);
+		}
+		for (ApplicationListener<?> listener : listeners) {
+			if (supportsEvent(listener, event.getClass(), sourceType)) {
+				if (retriever != null) {
+					retriever.applicationListeners.add(listener);
+				}
+				allListeners.add(listener);
+			}
+		}
+		if (!listenerBeans.isEmpty()) {
+			BeanFactory beanFactory = getBeanFactory();
+			for (String listenerBeanName : listenerBeans) {
+				try {
+					Class<?> listenerType = beanFactory.getType(listenerBeanName);
+					if (listenerType == null || supportsEvent(listenerType, event)) {
+						ApplicationListener<?> listener =
+								beanFactory.getBean(listenerBeanName, ApplicationListener.class);
+						if (!allListeners.contains(listener) && supportsEvent(listener, event.getClass(), sourceType)) {
+							if (retriever != null) {
+								retriever.applicationListenerBeans.add(listenerBeanName);
+							}
 							allListeners.add(listener);
 						}
 					}
-					catch (NoSuchBeanDefinitionException ex) {
-						// Singleton listener instance (without backing bean definition) disappeared -
-						// probably in the middle of the destruction phase
-					}
+				}
+				catch (NoSuchBeanDefinitionException ex) {
+					// Singleton listener instance (without backing bean definition) disappeared -
+					// probably in the middle of the destruction phase
 				}
 			}
-			OrderComparator.sort(allListeners);
-			this.retrieverCache.put(cacheKey, retriever);
-			return allListeners;
 		}
+		OrderComparator.sort(allListeners);
+		return allListeners;
+	}
+
+	/**
+	 * Filter a listener early through checking its generically declared event
+	 * type before trying to instantiate it.
+	 * <p>If this method returns {@code true} for a given listener as a first pass,
+	 * the listener instance will get retrieved and fully evaluated through a
+	 * {@link #supportsEvent(ApplicationListener, Class, Class)} call afterwards.
+	 * @param listenerType the listener's type as determined by the BeanFactory
+	 * @param event the event to check
+	 * @return whether the given listener should be included in the candidates
+	 * for the given event type
+	 */
+	protected boolean supportsEvent(Class<?> listenerType, ApplicationEvent event) {
+		if (SmartApplicationListener.class.isAssignableFrom(listenerType)) {
+			return true;
+		}
+		Class<?> declaredEventType = GenericApplicationListenerAdapter.resolveDeclaredEventType(listenerType);
+		return (declaredEventType == null || declaredEventType.isInstance(event));
 	}
 
 	/**
@@ -189,8 +259,8 @@ public abstract class AbstractApplicationEventMulticaster implements Application
 	 * @param listener the target listener to check
 	 * @param eventType the event type to check against
 	 * @param sourceType the source type to check against
-	 * @return whether the given listener should be included in the
-	 * candidates for the given event type
+	 * @return whether the given listener should be included in the candidates
+	 * for the given event type
 	 */
 	protected boolean supportsEvent(ApplicationListener<?> listener,
 			Class<? extends ApplicationEvent> eventType, Class<?> sourceType) {

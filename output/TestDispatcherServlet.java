@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2012 the original author or authors.
+ * Copyright 2002-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,17 +18,18 @@ package org.springframework.test.web.servlet;
 
 import java.io.IOException;
 import java.util.concurrent.Callable;
-import java.util.concurrent.CountDownLatch;
-
 import javax.servlet.ServletException;
 import javax.servlet.ServletRequest;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.springframework.mock.web.MockAsyncContext;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.context.request.NativeWebRequest;
-import org.springframework.web.context.request.async.*;
+import org.springframework.web.context.request.async.CallableProcessingInterceptorAdapter;
+import org.springframework.web.context.request.async.DeferredResult;
+import org.springframework.web.context.request.async.DeferredResultProcessingInterceptorAdapter;
+import org.springframework.web.context.request.async.WebAsyncManager;
+import org.springframework.web.context.request.async.WebAsyncUtils;
 import org.springframework.web.servlet.DispatcherServlet;
 import org.springframework.web.servlet.HandlerExecutionChain;
 import org.springframework.web.servlet.ModelAndView;
@@ -57,15 +58,11 @@ final class TestDispatcherServlet extends DispatcherServlet {
 
 
 	@Override
-	protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+	protected void service(HttpServletRequest request, HttpServletResponse response)
+			throws ServletException, IOException {
 
 		registerAsyncResultInterceptors(request);
-
 		super.service(request, response);
-
-		if (request.isAsyncStarted()) {
-			addAsyncResultLatch(request);
-		}
 	}
 
 	private void registerAsyncResultInterceptors(final HttpServletRequest request) {
@@ -82,17 +79,6 @@ final class TestDispatcherServlet extends DispatcherServlet {
 				getMvcResult(request).setAsyncResult(value);
 			}
 		});
-	}
-
-	private void addAsyncResultLatch(HttpServletRequest request) {
-		final CountDownLatch latch = new CountDownLatch(1);
-		((MockAsyncContext) request.getAsyncContext()).addDispatchHandler(new Runnable() {
-			@Override
-			public void run() {
-				latch.countDown();
-			}
-		});
-		getMvcResult(request).setAsyncResultLatch(latch);
 	}
 
 	protected DefaultMvcResult getMvcResult(ServletRequest request) {

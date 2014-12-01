@@ -25,7 +25,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
-
 import javax.activation.FileTypeMap;
 import javax.servlet.ServletContext;
 import javax.servlet.http.HttpServletRequest;
@@ -33,6 +32,7 @@ import javax.servlet.http.HttpServletResponse;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+
 import org.springframework.beans.factory.BeanFactoryUtils;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.core.OrderComparator;
@@ -221,11 +221,22 @@ public class ContentNegotiatingViewResolver extends WebApplicationObjectSupport 
 	}
 
 	/**
+	 * Whether to return HTTP Status 406 if no suitable is found.
+	 */
+	public boolean isUseNotAcceptableStatusCode() {
+		return this.useNotAcceptableStatusCode;
+	}
+
+	/**
 	 * Set the default views to use when a more specific view can not be obtained
 	 * from the {@link ViewResolver} chain.
 	 */
 	public void setDefaultViews(List<View> defaultViews) {
 		this.defaultViews = defaultViews;
+	}
+
+	public List<View> getDefaultViews() {
+		return Collections.unmodifiableList(this.defaultViews);
 	}
 
 	/**
@@ -234,6 +245,10 @@ public class ContentNegotiatingViewResolver extends WebApplicationObjectSupport 
 	 */
 	public void setViewResolvers(List<ViewResolver> viewResolvers) {
 		this.viewResolvers = viewResolvers;
+	}
+
+	public List<ViewResolver> getViewResolvers() {
+		return Collections.unmodifiableList(this.viewResolvers);
 	}
 
 
