@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,9 +39,13 @@ import org.springframework.beans.factory.FactoryBean;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor;
+import org.springframework.beans.factory.annotation.Lookup;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.QualifierAnnotationAutowireCandidateResolver;
 import org.springframework.beans.factory.config.BeanDefinitionHolder;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
+import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProcessor;
 import org.springframework.beans.factory.support.ChildBeanDefinition;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.beans.factory.support.RootBeanDefinition;
@@ -66,17 +70,16 @@ import static org.junit.Assert.*;
  */
 public class ConfigurationClassPostProcessorTests {
 
-	private DefaultListableBeanFactory beanFactory;
+	private final DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
 
 
 	@Before
-	public void setUp() {
-		DefaultListableBeanFactory bf = new DefaultListableBeanFactory();
+	public void setup() {
 		QualifierAnnotationAutowireCandidateResolver acr = new QualifierAnnotationAutowireCandidateResolver();
-		acr.setBeanFactory(bf);
-		bf.setAutowireCandidateResolver(acr);
-		this.beanFactory = bf;
+		acr.setBeanFactory(this.beanFactory);
+		this.beanFactory.setAutowireCandidateResolver(acr);
 	}
+
 
 	/**
 	 * Enhanced {@link Configuration} classes are only necessary for respecting
@@ -346,6 +349,18 @@ public class ConfigurationClassPostProcessorTests {
 			assertTrue(ex.getMessage().contains(Foo.class.getName()));
 			assertTrue(ex.getMessage().contains("InvalidOverridingSingletonBeanConfig"));
 		}
+	}
+
+	@Test
+	public void nestedConfigurationClassesProcessedInCorrectOrder() {
+		beanFactory.registerBeanDefinition("config", new RootBeanDefinition(ConfigWithOrderedNestedClasses.class));
+		ConfigurationClassPostProcessor pp = new ConfigurationClassPostProcessor();
+		pp.postProcessBeanFactory(beanFactory);
+
+		Foo foo = beanFactory.getBean(Foo.class);
+		assertTrue(foo instanceof ExtendedFoo);
+		Bar bar = beanFactory.getBean(Bar.class);
+		assertSame(foo, bar.foo);
 	}
 
 	@Test
@@ -780,6 +795,26 @@ public class ConfigurationClassPostProcessorTests {
 		assertSame(ctx.getBean(TestBean.class), bean.testBeans.get(0));
 	}
 
+	@Test
+	public void testBeanLookupFromSameConfigurationClass() {
+		ApplicationContext ctx = new AnnotationConfigApplicationContext(BeanLookupConfiguration.class);
+		BeanLookupConfiguration bean = ctx.getBean(BeanLookupConfiguration.class);
+		assertNotNull(bean.getTestBean());
+		assertSame(ctx.getBean(TestBean.class), bean.getTestBean());
+	}
+
+	@Test(expected = BeanDefinitionStoreException.class)
+	public void testNameClashBetweenConfigurationClassAndBean() {
+		ApplicationContext ctx = new AnnotationConfigApplicationContext(MyTestBean.class);
+		ctx.getBean("myTestBean", TestBean.class);
+	}
+
+	@Test
+	public void testBeanDefinitionRegistryPostProcessorConfig() {
+		ApplicationContext ctx = new AnnotationConfigApplicationContext(BeanDefinitionRegistryPostProcessorConfig.class);
+		assertTrue(ctx.getBean("myTestBean") instanceof TestBean);
+	}
+
 
 	// -------------------------------------------------------------------------
 
@@ -825,6 +860,36 @@ public class ConfigurationClassPostProcessorTests {
 		}
 	}
 
+	@Configuration
+	static class ConfigWithOrderedNestedClasses {
+
+		@Configuration
+		@Order(1)
+		static class SingletonBeanConfig {
+
+			public @Bean Foo foo() {
+				return new Foo();
+			}
+
+			public @Bean Bar bar() {
+				return new Bar(foo());
+			}
+		}
+
+		@Configuration
+		@Order(2)
+		static class OverridingSingletonBeanConfig {
+
+			public @Bean ExtendedFoo foo() {
+				return new ExtendedFoo();
+			}
+
+			public @Bean Bar bar() {
+				return new Bar(foo());
+			}
+		}
+	}
+
 	static class Foo {
 	}
 
@@ -846,8 +911,7 @@ public class ConfigurationClassPostProcessorTests {
 	@Configuration
 	static class UnloadedConfig {
 
-		public @Bean
-		Foo foo() {
+		public @Bean Foo foo() {
 			return new Foo();
 		}
 	}
@@ -855,8 +919,7 @@ public class ConfigurationClassPostProcessorTests {
 	@Configuration
 	static class LoadedConfig {
 
-		public @Bean
-		Bar bar() {
+		public @Bean Bar bar() {
 			return new Bar(new Foo());
 		}
 	}
@@ -870,9 +933,7 @@ public class ConfigurationClassPostProcessorTests {
 	@Configuration
 	public static class ScopedProxyConfigurationClass {
 
-		@Bean
-		@Lazy
-		@Scope(proxyMode = ScopedProxyMode.INTERFACES)
+		@Bean @Lazy @Scope(proxyMode = ScopedProxyMode.INTERFACES)
 		public ITestBean scopedClass() {
 			return new TestBean();
 		}
@@ -949,7 +1010,6 @@ public class ConfigurationClassPostProcessorTests {
 			};
 		}
 	}
-
 
 	@Configuration
 	public static class RawRepositoryConfiguration {
@@ -1250,7 +1310,7 @@ public class ConfigurationClassPostProcessorTests {
 
 		@PostConstruct
 		public void validate() {
-			Assert.notNull(provider);
+			Assert.notNull(provider, "No ServiceBeanProvider injected");
 		}
 	}
 
@@ -1291,7 +1351,7 @@ public class ConfigurationClassPostProcessorTests {
 
 		@PostConstruct
 		public void validate() {
-			Assert.notNull(provider);
+			Assert.notNull(provider, "No ServiceBeanProvider injected");
 		}
 	}
 
@@ -1403,7 +1463,7 @@ public class ConfigurationClassPostProcessorTests {
 	static class DependingFoo {
 
 		DependingFoo(BarArgument bar) {
-			Assert.notNull(bar);
+			Assert.notNull(bar, "No BarArgument injected");
 		}
 	}
 
@@ -1447,6 +1507,35 @@ public class ConfigurationClassPostProcessorTests {
 		@Bean
 		public TestBean thing() {
 			return new TestBean();
+		}
+	}
+
+	@Configuration
+	static abstract class BeanLookupConfiguration {
+
+		@Bean
+		public TestBean thing() {
+			return new TestBean();
+		}
+
+		@Lookup
+		public abstract TestBean getTestBean();
+	}
+
+	@Configuration
+	static class BeanDefinitionRegistryPostProcessorConfig {
+
+		@Bean
+		public static BeanDefinitionRegistryPostProcessor bdrpp() {
+			return new BeanDefinitionRegistryPostProcessor() {
+				@Override
+				public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
+					registry.registerBeanDefinition("myTestBean", new RootBeanDefinition(TestBean.class));
+				}
+				@Override
+				public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) {
+				}
+			};
 		}
 	}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,46 +14,44 @@
  * limitations under the License.
  */
 
-package org.springframework.web.servlet.mvc.method;
+package org.springframework.web.reactive.result.method;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
+import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServletRequest;
+import java.util.stream.Collectors;
 
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.InvalidMediaTypeException;
 import org.springframework.http.MediaType;
-import org.springframework.util.CollectionUtils;
+import org.springframework.http.server.PathContainer;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.util.Assert;
 import org.springframework.util.MultiValueMap;
-import org.springframework.util.StringUtils;
-import org.springframework.web.HttpMediaTypeNotAcceptableException;
-import org.springframework.web.HttpMediaTypeNotSupportedException;
-import org.springframework.web.HttpRequestMethodNotSupportedException;
-import org.springframework.web.bind.UnsatisfiedServletRequestParameterException;
-import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.method.HandlerMethod;
-import org.springframework.web.servlet.HandlerMapping;
-import org.springframework.web.servlet.handler.AbstractHandlerMethodMapping;
-import org.springframework.web.servlet.mvc.condition.NameValueExpression;
-import org.springframework.web.util.WebUtils;
+import org.springframework.web.reactive.HandlerMapping;
+import org.springframework.web.reactive.result.condition.NameValueExpression;
+import org.springframework.web.server.MethodNotAllowedException;
+import org.springframework.web.server.NotAcceptableStatusException;
+import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.server.ServerWebInputException;
+import org.springframework.web.server.UnsupportedMediaTypeStatusException;
+import org.springframework.web.util.pattern.PathPattern;
+
 
 /**
  * Abstract base class for classes for which {@link RequestMappingInfo} defines
  * the mapping between a request and a handler method.
  *
- * @author Arjen Poutsma
  * @author Rossen Stoyanchev
- * @since 3.1
+ * @since 5.0
  */
 public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMethodMapping<RequestMappingInfo> {
 
@@ -65,23 +63,10 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 		}
 		catch (NoSuchMethodException ex) {
 			// Should never happen
-			throw new IllegalStateException("Failed to retrieve internal handler method for HTTP OPTIONS", ex);
+			throw new IllegalStateException("No handler for HTTP OPTIONS", ex);
 		}
 	}
 
-
-	protected RequestMappingInfoHandlerMapping() {
-		setHandlerMethodMappingNamingStrategy(new RequestMappingInfoHandlerMethodMappingNamingStrategy());
-	}
-
-
-	/**
-	 * Get the URL path patterns associated with this {@link RequestMappingInfo}.
-	 */
-	@Override
-	protected Set<String> getMappingPathPatterns(RequestMappingInfo info) {
-		return info.getPatternsCondition().getPatterns();
-	}
 
 	/**
 	 * Check if the given RequestMappingInfo matches the current request and
@@ -90,21 +75,16 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 	 * @return an info in case of a match; or {@code null} otherwise.
 	 */
 	@Override
-	protected RequestMappingInfo getMatchingMapping(RequestMappingInfo info, HttpServletRequest request) {
-		return info.getMatchingCondition(request);
+	protected RequestMappingInfo getMatchingMapping(RequestMappingInfo info, ServerWebExchange exchange) {
+		return info.getMatchingCondition(exchange);
 	}
 
 	/**
 	 * Provide a Comparator to sort RequestMappingInfos matched to a request.
 	 */
 	@Override
-	protected Comparator<RequestMappingInfo> getMappingComparator(final HttpServletRequest request) {
-		return new Comparator<RequestMappingInfo>() {
-			@Override
-			public int compare(RequestMappingInfo info1, RequestMappingInfo info2) {
-				return info1.compareTo(info2, request);
-			}
-		};
+	protected Comparator<RequestMappingInfo> getMappingComparator(final ServerWebExchange exchange) {
+		return (info1, info2) -> info1.compareTo(info2, exchange);
 	}
 
 	/**
@@ -114,121 +94,97 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 	 * @see HandlerMapping#PRODUCIBLE_MEDIA_TYPES_ATTRIBUTE
 	 */
 	@Override
-	protected void handleMatch(RequestMappingInfo info, String lookupPath, HttpServletRequest request) {
-		super.handleMatch(info, lookupPath, request);
+	protected void handleMatch(RequestMappingInfo info, HandlerMethod handlerMethod,
+			ServerWebExchange exchange) {
 
-		String bestPattern;
+		super.handleMatch(info, handlerMethod, exchange);
+
+		PathContainer lookupPath = exchange.getRequest().getPath().pathWithinApplication();
+
+		PathPattern bestPattern;
 		Map<String, String> uriVariables;
-		Map<String, String> decodedUriVariables;
+		Map<String, MultiValueMap<String, String>> matrixVariables;
 
-		Set<String> patterns = info.getPatternsCondition().getPatterns();
+		Set<PathPattern> patterns = info.getPatternsCondition().getPatterns();
 		if (patterns.isEmpty()) {
-			bestPattern = lookupPath;
+			bestPattern = getPathPatternParser().parse(lookupPath.value());
 			uriVariables = Collections.emptyMap();
-			decodedUriVariables = Collections.emptyMap();
+			matrixVariables = Collections.emptyMap();
 		}
 		else {
 			bestPattern = patterns.iterator().next();
-			uriVariables = getPathMatcher().extractUriTemplateVariables(bestPattern, lookupPath);
-			decodedUriVariables = getUrlPathHelper().decodePathVariables(request, uriVariables);
+			PathPattern.PathMatchInfo result = bestPattern.matchAndExtract(lookupPath);
+			Assert.notNull(result, () ->
+					"Expected bestPattern: " + bestPattern + " to match lookupPath " + lookupPath);
+			uriVariables = result.getUriVariables();
+			matrixVariables = result.getMatrixVariables();
 		}
 
-		request.setAttribute(BEST_MATCHING_PATTERN_ATTRIBUTE, bestPattern);
-		request.setAttribute(HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE, decodedUriVariables);
-
-		if (isMatrixVariableContentAvailable()) {
-			Map<String, MultiValueMap<String, String>> matrixVars = extractMatrixVariables(request, uriVariables);
-			request.setAttribute(HandlerMapping.MATRIX_VARIABLES_ATTRIBUTE, matrixVars);
-		}
+		exchange.getAttributes().put(BEST_MATCHING_HANDLER_ATTRIBUTE, handlerMethod);
+		exchange.getAttributes().put(BEST_MATCHING_PATTERN_ATTRIBUTE, bestPattern);
+		exchange.getAttributes().put(URI_TEMPLATE_VARIABLES_ATTRIBUTE, uriVariables);
+		exchange.getAttributes().put(MATRIX_VARIABLES_ATTRIBUTE, matrixVariables);
 
 		if (!info.getProducesCondition().getProducibleMediaTypes().isEmpty()) {
 			Set<MediaType> mediaTypes = info.getProducesCondition().getProducibleMediaTypes();
-			request.setAttribute(PRODUCIBLE_MEDIA_TYPES_ATTRIBUTE, mediaTypes);
+			exchange.getAttributes().put(PRODUCIBLE_MEDIA_TYPES_ATTRIBUTE, mediaTypes);
 		}
-	}
-
-	private boolean isMatrixVariableContentAvailable() {
-		return !getUrlPathHelper().shouldRemoveSemicolonContent();
-	}
-
-	private Map<String, MultiValueMap<String, String>> extractMatrixVariables(
-			HttpServletRequest request, Map<String, String> uriVariables) {
-
-		Map<String, MultiValueMap<String, String>> result = new LinkedHashMap<>();
-		for (Entry<String, String> uriVar : uriVariables.entrySet()) {
-			String uriVarValue = uriVar.getValue();
-
-			int equalsIndex = uriVarValue.indexOf('=');
-			if (equalsIndex == -1) {
-				continue;
-			}
-
-			String matrixVariables;
-
-			int semicolonIndex = uriVarValue.indexOf(';');
-			if ((semicolonIndex == -1) || (semicolonIndex == 0) || (equalsIndex < semicolonIndex)) {
-				matrixVariables = uriVarValue;
-			}
-			else {
-				matrixVariables = uriVarValue.substring(semicolonIndex + 1);
-				uriVariables.put(uriVar.getKey(), uriVarValue.substring(0, semicolonIndex));
-			}
-
-			MultiValueMap<String, String> vars = WebUtils.parseMatrixVariables(matrixVariables);
-			result.put(uriVar.getKey(), getUrlPathHelper().decodeMatrixVariables(request, vars));
-		}
-		return result;
 	}
 
 	/**
-	 * Iterate all RequestMappingInfo's once again, look if any match by URL at
-	 * least and raise exceptions according to what doesn't match.
-	 * @throws HttpRequestMethodNotSupportedException if there are matches by URL
-	 * but not by HTTP method
-	 * @throws HttpMediaTypeNotAcceptableException if there are matches by URL
-	 * but not by consumable/producible media types
+	 * Iterate all RequestMappingInfos once again, look if any match by URL at
+	 * least and raise exceptions accordingly.
+	 * @throws MethodNotAllowedException for matches by URL but not by HTTP method
+	 * @throws UnsupportedMediaTypeStatusException if there are matches by URL
+	 * and HTTP method but not by consumable media types
+	 * @throws NotAcceptableStatusException if there are matches by URL and HTTP
+	 * method but not by producible media types
+	 * @throws ServerWebInputException if there are matches by URL and HTTP
+	 * method but not by query parameter conditions
 	 */
 	@Override
-	protected HandlerMethod handleNoMatch(Set<RequestMappingInfo> infos, String lookupPath,
-			HttpServletRequest request) throws ServletException {
+	protected HandlerMethod handleNoMatch(Set<RequestMappingInfo> infos,
+			ServerWebExchange exchange) throws Exception {
 
-		PartialMatchHelper helper = new PartialMatchHelper(infos, request);
+		PartialMatchHelper helper = new PartialMatchHelper(infos, exchange);
 
 		if (helper.isEmpty()) {
 			return null;
 		}
 
+		ServerHttpRequest request = exchange.getRequest();
+
 		if (helper.hasMethodsMismatch()) {
-			Set<String> methods = helper.getAllowedMethods();
-			if (HttpMethod.OPTIONS.matches(request.getMethod())) {
+			String httpMethod = request.getMethodValue();
+			Set<HttpMethod> methods = helper.getAllowedMethods();
+			if (HttpMethod.OPTIONS.matches(httpMethod)) {
 				HttpOptionsHandler handler = new HttpOptionsHandler(methods);
 				return new HandlerMethod(handler, HTTP_OPTIONS_HANDLE_METHOD);
 			}
-			throw new HttpRequestMethodNotSupportedException(request.getMethod(), methods);
+			throw new MethodNotAllowedException(httpMethod, methods);
 		}
 
 		if (helper.hasConsumesMismatch()) {
 			Set<MediaType> mediaTypes = helper.getConsumableMediaTypes();
-			MediaType contentType = null;
-			if (StringUtils.hasLength(request.getContentType())) {
-				try {
-					contentType = MediaType.parseMediaType(request.getContentType());
-				}
-				catch (InvalidMediaTypeException ex) {
-					throw new HttpMediaTypeNotSupportedException(ex.getMessage());
-				}
+			MediaType contentType;
+			try {
+				contentType = request.getHeaders().getContentType();
 			}
-			throw new HttpMediaTypeNotSupportedException(contentType, new ArrayList<>(mediaTypes));
+			catch (InvalidMediaTypeException ex) {
+				throw new UnsupportedMediaTypeStatusException(ex.getMessage());
+			}
+			throw new UnsupportedMediaTypeStatusException(contentType, new ArrayList<>(mediaTypes));
 		}
 
 		if (helper.hasProducesMismatch()) {
 			Set<MediaType> mediaTypes = helper.getProducibleMediaTypes();
-			throw new HttpMediaTypeNotAcceptableException(new ArrayList<>(mediaTypes));
+			throw new NotAcceptableStatusException(new ArrayList<>(mediaTypes));
 		}
 
 		if (helper.hasParamsMismatch()) {
-			List<String[]> conditions = helper.getParamConditions();
-			throw new UnsatisfiedServletRequestParameterException(conditions, request.getParameterMap());
+			throw new ServerWebInputException(
+					"Unsatisfied query parameter conditions: " + helper.getParamConditions() +
+							", actual parameters: " + request.getQueryParams());
 		}
 
 		return null;
@@ -242,13 +198,14 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 
 		private final List<PartialMatch> partialMatches = new ArrayList<>();
 
-		public PartialMatchHelper(Set<RequestMappingInfo> infos, HttpServletRequest request) {
-			for (RequestMappingInfo info : infos) {
-				if (info.getPatternsCondition().getMatchingCondition(request) != null) {
-					this.partialMatches.add(new PartialMatch(info, request));
-				}
-			}
+
+		public PartialMatchHelper(Set<RequestMappingInfo> infos, ServerWebExchange exchange) {
+			this.partialMatches.addAll(infos.stream().
+					filter(info -> info.getPatternsCondition().getMatchingCondition(exchange) != null).
+					map(info -> new PartialMatch(info, exchange)).
+					collect(Collectors.toList()));
 		}
+
 
 		/**
 		 * Whether there any partial matches.
@@ -261,61 +218,42 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 		 * Any partial matches for "methods"?
 		 */
 		public boolean hasMethodsMismatch() {
-			for (PartialMatch match : this.partialMatches) {
-				if (match.hasMethodsMatch()) {
-					return false;
-				}
-			}
-			return true;
+			return this.partialMatches.stream().
+					noneMatch(PartialMatch::hasMethodsMatch);
 		}
 
 		/**
 		 * Any partial matches for "methods" and "consumes"?
 		 */
 		public boolean hasConsumesMismatch() {
-			for (PartialMatch match : this.partialMatches) {
-				if (match.hasConsumesMatch()) {
-					return false;
-				}
-			}
-			return true;
+			return this.partialMatches.stream().
+					noneMatch(PartialMatch::hasConsumesMatch);
 		}
 
 		/**
 		 * Any partial matches for "methods", "consumes", and "produces"?
 		 */
 		public boolean hasProducesMismatch() {
-			for (PartialMatch match : this.partialMatches) {
-				if (match.hasProducesMatch()) {
-					return false;
-				}
-			}
-			return true;
+			return this.partialMatches.stream().
+					noneMatch(PartialMatch::hasProducesMatch);
 		}
 
 		/**
 		 * Any partial matches for "methods", "consumes", "produces", and "params"?
 		 */
 		public boolean hasParamsMismatch() {
-			for (PartialMatch match : this.partialMatches) {
-				if (match.hasParamsMatch()) {
-					return false;
-				}
-			}
-			return true;
+			return this.partialMatches.stream().
+					noneMatch(PartialMatch::hasParamsMatch);
 		}
 
 		/**
 		 * Return declared HTTP methods.
 		 */
-		public Set<String> getAllowedMethods() {
-			Set<String> result = new LinkedHashSet<>();
-			for (PartialMatch match : this.partialMatches) {
-				for (RequestMethod method : match.getInfo().getMethodsCondition().getMethods()) {
-					result.add(method.name());
-				}
-			}
-			return result;
+		public Set<HttpMethod> getAllowedMethods() {
+			return this.partialMatches.stream().
+					flatMap(m -> m.getInfo().getMethodsCondition().getMethods().stream()).
+					map(requestMethod -> HttpMethod.resolve(requestMethod.name())).
+					collect(Collectors.toSet());
 		}
 
 		/**
@@ -323,13 +261,9 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 		 * match the "methods" condition.
 		 */
 		public Set<MediaType> getConsumableMediaTypes() {
-			Set<MediaType> result = new LinkedHashSet<>();
-			for (PartialMatch match : this.partialMatches) {
-				if (match.hasMethodsMatch()) {
-					result.addAll(match.getInfo().getConsumesCondition().getConsumableMediaTypes());
-				}
-			}
-			return result;
+			return this.partialMatches.stream().filter(PartialMatch::hasMethodsMatch).
+					flatMap(m -> m.getInfo().getConsumesCondition().getConsumableMediaTypes().stream()).
+					collect(Collectors.toCollection(LinkedHashSet::new));
 		}
 
 		/**
@@ -337,35 +271,19 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 		 * match the "methods" and "consumes" conditions.
 		 */
 		public Set<MediaType> getProducibleMediaTypes() {
-			Set<MediaType> result = new LinkedHashSet<>();
-			for (PartialMatch match : this.partialMatches) {
-				if (match.hasConsumesMatch()) {
-					result.addAll(match.getInfo().getProducesCondition().getProducibleMediaTypes());
-				}
-			}
-			return result;
+			return this.partialMatches.stream().filter(PartialMatch::hasConsumesMatch).
+					flatMap(m -> m.getInfo().getProducesCondition().getProducibleMediaTypes().stream()).
+					collect(Collectors.toCollection(LinkedHashSet::new));
 		}
 
 		/**
 		 * Return declared "params" conditions but only among those that also
 		 * match the "methods", "consumes", and "params" conditions.
 		 */
-		public List<String[]> getParamConditions() {
-			List<String[]> result = new ArrayList<>();
-			for (PartialMatch match : this.partialMatches) {
-				if (match.hasProducesMatch()) {
-					Set<NameValueExpression<String>> set = match.getInfo().getParamsCondition().getExpressions();
-					if (!CollectionUtils.isEmpty(set)) {
-						int i = 0;
-						String[] array = new String[set.size()];
-						for (NameValueExpression<String> expression : set) {
-							array[i++] = expression.toString();
-						}
-						result.add(array);
-					}
-				}
-			}
-			return result;
+		public List<Set<NameValueExpression<String>>> getParamConditions() {
+			return this.partialMatches.stream().filter(PartialMatch::hasProducesMatch).
+					map(match -> match.getInfo().getParamsCondition().getExpressions()).
+					collect(Collectors.toList());
 		}
 
 
@@ -384,17 +302,19 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 
 			private final boolean paramsMatch;
 
+
 			/**
-			 * @param info RequestMappingInfo that matches the URL path.
-			 * @param request the current request
+			 * @param info RequestMappingInfo that matches the URL path
+			 * @param exchange the current exchange
 			 */
-			public PartialMatch(RequestMappingInfo info, HttpServletRequest request) {
+			public PartialMatch(RequestMappingInfo info, ServerWebExchange exchange) {
 				this.info = info;
-				this.methodsMatch = (info.getMethodsCondition().getMatchingCondition(request) != null);
-				this.consumesMatch = (info.getConsumesCondition().getMatchingCondition(request) != null);
-				this.producesMatch = (info.getProducesCondition().getMatchingCondition(request) != null);
-				this.paramsMatch = (info.getParamsCondition().getMatchingCondition(request) != null);
+				this.methodsMatch = info.getMethodsCondition().getMatchingCondition(exchange) != null;
+				this.consumesMatch = info.getConsumesCondition().getMatchingCondition(exchange) != null;
+				this.producesMatch = info.getProducesCondition().getMatchingCondition(exchange) != null;
+				this.paramsMatch = info.getParamsCondition().getMatchingCondition(exchange) != null;
 			}
+
 
 			public RequestMappingInfo getInfo() {
 				return this.info;
@@ -405,15 +325,15 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 			}
 
 			public boolean hasConsumesMatch() {
-				return (hasMethodsMatch() && this.consumesMatch);
+				return hasMethodsMatch() && this.consumesMatch;
 			}
 
 			public boolean hasProducesMatch() {
-				return (hasConsumesMatch() && this.producesMatch);
+				return hasConsumesMatch() && this.producesMatch;
 			}
 
 			public boolean hasParamsMatch() {
-				return (hasProducesMatch() && this.paramsMatch);
+				return hasProducesMatch() && this.paramsMatch;
 			}
 
 			@Override
@@ -423,7 +343,6 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 		}
 	}
 
-
 	/**
 	 * Default handler for HTTP OPTIONS.
 	 */
@@ -431,31 +350,27 @@ public abstract class RequestMappingInfoHandlerMapping extends AbstractHandlerMe
 
 		private final HttpHeaders headers = new HttpHeaders();
 
-		public HttpOptionsHandler(Set<String> declaredMethods) {
+
+		public HttpOptionsHandler(Set<HttpMethod> declaredMethods) {
 			this.headers.setAllow(initAllowedHttpMethods(declaredMethods));
 		}
 
-		private static Set<HttpMethod> initAllowedHttpMethods(Set<String> declaredMethods) {
-			Set<HttpMethod> result = new LinkedHashSet<>(declaredMethods.size());
+		private static Set<HttpMethod> initAllowedHttpMethods(Set<HttpMethod> declaredMethods) {
 			if (declaredMethods.isEmpty()) {
-				for (HttpMethod method : HttpMethod.values()) {
-					if (!HttpMethod.TRACE.equals(method)) {
-						result.add(method);
-					}
-				}
+				return EnumSet.allOf(HttpMethod.class).stream()
+						.filter(method -> !method.equals(HttpMethod.TRACE))
+						.collect(Collectors.toSet());
 			}
 			else {
-				boolean hasHead = declaredMethods.contains("HEAD");
-				for (String method : declaredMethods) {
-					result.add(HttpMethod.valueOf(method));
-					if (!hasHead && "GET".equals(method)) {
-						result.add(HttpMethod.HEAD);
-					}
+				Set<HttpMethod> result = new LinkedHashSet<>(declaredMethods);
+				if (result.contains(HttpMethod.GET)) {
+					result.add(HttpMethod.HEAD);
 				}
+				return result;
 			}
-			return result;
 		}
 
+		@SuppressWarnings("unused")
 		public HttpHeaders handle() {
 			return this.headers;
 		}

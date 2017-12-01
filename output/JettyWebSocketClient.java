@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,111 +14,102 @@
  * limitations under the License.
  */
 
-package org.springframework.web.socket.client.jetty;
+package org.springframework.web.reactive.socket.client;
 
 import java.net.URI;
-import java.security.Principal;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.Future;
 
-import org.eclipse.jetty.websocket.api.Session;
+import org.eclipse.jetty.websocket.api.UpgradeRequest;
+import org.eclipse.jetty.websocket.api.UpgradeResponse;
 import org.eclipse.jetty.websocket.client.ClientUpgradeRequest;
-import org.eclipse.jetty.websocket.client.WebSocketClient;
+import org.eclipse.jetty.websocket.client.io.UpgradeListener;
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.MonoProcessor;
 
 import org.springframework.context.Lifecycle;
-import org.springframework.core.task.AsyncListenableTaskExecutor;
-import org.springframework.core.task.SimpleAsyncTaskExecutor;
-import org.springframework.core.task.TaskExecutor;
+import org.springframework.core.io.buffer.DataBufferFactory;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpHeaders;
-import org.springframework.util.concurrent.ListenableFuture;
-import org.springframework.util.concurrent.ListenableFutureTask;
-import org.springframework.web.socket.WebSocketExtension;
-import org.springframework.web.socket.WebSocketHandler;
-import org.springframework.web.socket.WebSocketSession;
-import org.springframework.web.socket.adapter.jetty.JettyWebSocketHandlerAdapter;
-import org.springframework.web.socket.adapter.jetty.JettyWebSocketSession;
-import org.springframework.web.socket.adapter.jetty.WebSocketToJettyExtensionConfigAdapter;
-import org.springframework.web.socket.client.AbstractWebSocketClient;
-import org.springframework.web.util.UriComponents;
-import org.springframework.web.util.UriComponentsBuilder;
+import org.springframework.web.reactive.socket.HandshakeInfo;
+import org.springframework.web.reactive.socket.WebSocketHandler;
+import org.springframework.web.reactive.socket.adapter.JettyWebSocketHandlerAdapter;
+import org.springframework.web.reactive.socket.adapter.JettyWebSocketSession;
 
 /**
- * Initiates WebSocket requests to a WebSocket server programmatically
- * through the Jetty WebSocket API.
+ * A {@link WebSocketClient} implementation for use with Jetty
+ * {@link org.eclipse.jetty.websocket.client.WebSocketClient}.
  *
- * <p>As of 4.1 this class implements {@link Lifecycle} rather than
- * {@link org.springframework.context.SmartLifecycle}. Use
- * {@link org.springframework.web.socket.client.WebSocketConnectionManager
- * WebSocketConnectionManager} instead to auto-start a WebSocket connection.
+ * <p><strong>Note: </strong> the Jetty {@code WebSocketClient} requires
+ * lifecycle management and must be started and stopped. This is automatically
+ * managed when this class is declared as a Spring bean and created with the
+ * default constructor. See constructor notes for more details.
  *
+ * @author Violeta Georgieva
  * @author Rossen Stoyanchev
- * @since 4.0
+ * @since 5.0
  */
-public class JettyWebSocketClient extends AbstractWebSocketClient implements Lifecycle {
+public class JettyWebSocketClient extends WebSocketClientSupport implements WebSocketClient, Lifecycle {
 
-	private final org.eclipse.jetty.websocket.client.WebSocketClient client;
+	private final org.eclipse.jetty.websocket.client.WebSocketClient jettyClient;
+
+	private final boolean externallyManaged;
+
+	private boolean running = false;
 
 	private final Object lifecycleMonitor = new Object();
 
-	private AsyncListenableTaskExecutor taskExecutor = new SimpleAsyncTaskExecutor();
+	private final DataBufferFactory bufferFactory = new DefaultDataBufferFactory();
 
 
 	/**
-	 * Default constructor that creates an instance of
-	 * {@link org.eclipse.jetty.websocket.client.WebSocketClient}.
+	 * Default constructor that creates and manages an instance of a Jetty
+	 * {@link org.eclipse.jetty.websocket.client.WebSocketClient WebSocketClient}.
+	 * The instance can be obtained with {@link #getJettyClient()} for further
+	 * configuration.
+	 *
+	 * <p><strong>Note: </strong> When this constructor is used {@link Lifecycle}
+	 * methods of this class are delegated to the Jetty {@code WebSocketClient}.
 	 */
 	public JettyWebSocketClient() {
-		this.client = new org.eclipse.jetty.websocket.client.WebSocketClient();
+		this.jettyClient = new org.eclipse.jetty.websocket.client.WebSocketClient();
+		this.externallyManaged = false;
 	}
 
 	/**
-	 * Constructor that accepts an existing
-	 * {@link org.eclipse.jetty.websocket.client.WebSocketClient} instance.
-	 */
-	public JettyWebSocketClient(WebSocketClient client) {
-		this.client = client;
-	}
-
-
-	/**
-	 * Set an {@link AsyncListenableTaskExecutor} to use when opening connections.
-	 * If this property is set to {@code null}, calls to  any of the
-	 * {@code doHandshake} methods will block until the connection is established.
+	 * Constructor that accepts an existing instance of a Jetty
+	 * {@link org.eclipse.jetty.websocket.client.WebSocketClient WebSocketClient}.
 	 *
-	 * <p>By default an instance of {@code SimpleAsyncTaskExecutor} is used.
+	 * <p><strong>Note: </strong> Use of this constructor implies the Jetty
+	 * {@code WebSocketClient} is externally managed and hence {@link Lifecycle}
+	 * methods of this class are not delegated to it.
 	 */
-	public void setTaskExecutor(AsyncListenableTaskExecutor taskExecutor) {
-		this.taskExecutor = taskExecutor;
+	public JettyWebSocketClient(org.eclipse.jetty.websocket.client.WebSocketClient jettyClient) {
+		this.jettyClient = jettyClient;
+		this.externallyManaged = true;
 	}
+
 
 	/**
-	 * Return the configured {@link TaskExecutor}.
+	 * Return the underlying Jetty {@code WebSocketClient}.
 	 */
-	public AsyncListenableTaskExecutor getTaskExecutor() {
-		return this.taskExecutor;
+	public org.eclipse.jetty.websocket.client.WebSocketClient getJettyClient() {
+		return this.jettyClient;
 	}
 
-	@Override
-	public boolean isRunning() {
-		synchronized (this.lifecycleMonitor) {
-			return this.client.isStarted();
-		}
-	}
 
 	@Override
 	public void start() {
+		if (this.externallyManaged) {
+			return;
+		}
 		synchronized (this.lifecycleMonitor) {
 			if (!isRunning()) {
 				try {
-					if (logger.isInfoEnabled()) {
-						logger.info("Starting Jetty WebSocketClient");
-					}
-					this.client.start();
+					this.running = true;
+					this.jettyClient.start();
 				}
 				catch (Exception ex) {
-					throw new IllegalStateException("Failed to start Jetty client", ex);
+					throw new IllegalStateException("Failed to start Jetty WebSocketClient", ex);
 				}
 			}
 		}
@@ -126,74 +117,83 @@ public class JettyWebSocketClient extends AbstractWebSocketClient implements Lif
 
 	@Override
 	public void stop() {
+		if (this.externallyManaged) {
+			return;
+		}
 		synchronized (this.lifecycleMonitor) {
 			if (isRunning()) {
 				try {
-					if (logger.isInfoEnabled()) {
-						logger.info("Stopping Jetty WebSocketClient");
-					}
-					this.client.stop();
+					this.running = false;
+					this.jettyClient.stop();
 				}
 				catch (Exception ex) {
-					logger.error("Error stopping Jetty WebSocketClient", ex);
+					throw new IllegalStateException("Error stopping Jetty WebSocketClient", ex);
 				}
 			}
 		}
 	}
 
 	@Override
-	public ListenableFuture<WebSocketSession> doHandshake(WebSocketHandler webSocketHandler,
-			String uriTemplate, Object... uriVars) {
+	public boolean isRunning() {
+		synchronized (this.lifecycleMonitor) {
+			return this.running;
+		}
+	}
 
-		UriComponents uriComponents = UriComponentsBuilder.fromUriString(uriTemplate).buildAndExpand(uriVars).encode();
-		return doHandshake(webSocketHandler, null, uriComponents.toUri());
+
+	@Override
+	public Mono<Void> execute(URI url, WebSocketHandler handler) {
+		return execute(url, new HttpHeaders(), handler);
 	}
 
 	@Override
-	public ListenableFuture<WebSocketSession> doHandshakeInternal(WebSocketHandler wsHandler,
-			HttpHeaders headers, final URI uri, List<String> protocols,
-			List<WebSocketExtension> extensions,  Map<String, Object> attributes) {
-
-		final ClientUpgradeRequest request = new ClientUpgradeRequest();
-		request.setSubProtocols(protocols);
-
-		for (WebSocketExtension e : extensions) {
-			request.addExtensions(new WebSocketToJettyExtensionConfigAdapter(e));
-		}
-
-		for (String header : headers.keySet()) {
-			request.setHeader(header, headers.get(header));
-		}
-
-		Principal user = getUser();
-		final JettyWebSocketSession wsSession = new JettyWebSocketSession(attributes, user);
-		final JettyWebSocketHandlerAdapter listener = new JettyWebSocketHandlerAdapter(wsHandler, wsSession);
-
-		Callable<WebSocketSession> connectTask = new Callable<WebSocketSession>() {
-			@Override
-			public WebSocketSession call() throws Exception {
-				Future<Session> future = client.connect(listener, uri, request);
-				future.get();
-				return wsSession;
-			}
-		};
-
-		if (this.taskExecutor != null) {
-			return this.taskExecutor.submitListenable(connectTask);
-		}
-		else {
-			ListenableFutureTask<WebSocketSession> task = new ListenableFutureTask<>(connectTask);
-			task.run();
-			return task;
-		}
+	public Mono<Void> execute(URI url, HttpHeaders headers, WebSocketHandler handler) {
+		return executeInternal(url, headers, handler);
 	}
 
-	/**
-	 * @return the user to make available through {@link WebSocketSession#getPrincipal()};
-	 * 	by default this method returns {@code null}
-	 */
-	protected Principal getUser() {
-		return null;
+	private Mono<Void> executeInternal(URI url, HttpHeaders headers, WebSocketHandler handler) {
+		MonoProcessor<Void> completionMono = MonoProcessor.create();
+		return Mono.fromCallable(
+				() -> {
+					List<String> protocols = beforeHandshake(url, headers, handler);
+					ClientUpgradeRequest upgradeRequest = new ClientUpgradeRequest();
+					upgradeRequest.setSubProtocols(protocols);
+					Object jettyHandler = createJettyHandler(url, handler, completionMono);
+					UpgradeListener upgradeListener = new DefaultUpgradeListener(headers);
+					return this.jettyClient.connect(jettyHandler, url, upgradeRequest, upgradeListener);
+				})
+				.then(completionMono);
+	}
+
+	private Object createJettyHandler(URI url, WebSocketHandler handler, MonoProcessor<Void> completion) {
+		return new JettyWebSocketHandlerAdapter(handler,
+				session -> {
+					UpgradeResponse response = session.getUpgradeResponse();
+					HttpHeaders responseHeaders = new HttpHeaders();
+					response.getHeaders().forEach(responseHeaders::put);
+					HandshakeInfo info = afterHandshake(url, responseHeaders);
+					return new JettyWebSocketSession(session, info, this.bufferFactory, completion);
+				});
+	}
+
+
+	private static class DefaultUpgradeListener implements UpgradeListener {
+
+		private final HttpHeaders headers;
+
+
+		public DefaultUpgradeListener(HttpHeaders headers) {
+			this.headers = headers;
+		}
+
+		@Override
+		public void onHandshakeRequest(UpgradeRequest request) {
+			this.headers.forEach(request::setHeader);
+		}
+
+		@Override
+		public void onHandshakeResponse(UpgradeResponse response) {
+		}
 	}
 
 }

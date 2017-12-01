@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,199 +14,146 @@
  * limitations under the License.
  */
 
-package org.springframework.web.socket.client.standard;
+package org.springframework.web.reactive.socket.client;
 
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.URI;
-import java.net.UnknownHostException;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.Callable;
 import javax.websocket.ClientEndpointConfig;
 import javax.websocket.ClientEndpointConfig.Configurator;
 import javax.websocket.ContainerProvider;
 import javax.websocket.Endpoint;
-import javax.websocket.Extension;
 import javax.websocket.HandshakeResponse;
+import javax.websocket.Session;
 import javax.websocket.WebSocketContainer;
 
-import org.springframework.core.task.AsyncListenableTaskExecutor;
-import org.springframework.core.task.SimpleAsyncTaskExecutor;
-import org.springframework.core.task.TaskExecutor;
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.MonoProcessor;
+import reactor.core.scheduler.Schedulers;
+
+import org.springframework.core.io.buffer.DataBufferFactory;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpHeaders;
-import org.springframework.util.Assert;
-import org.springframework.util.concurrent.ListenableFuture;
-import org.springframework.util.concurrent.ListenableFutureTask;
-import org.springframework.web.socket.WebSocketExtension;
-import org.springframework.web.socket.WebSocketHandler;
-import org.springframework.web.socket.WebSocketSession;
-import org.springframework.web.socket.adapter.standard.StandardWebSocketHandlerAdapter;
-import org.springframework.web.socket.adapter.standard.StandardWebSocketSession;
-import org.springframework.web.socket.adapter.standard.WebSocketToStandardExtensionAdapter;
-import org.springframework.web.socket.client.AbstractWebSocketClient;
+import org.springframework.web.reactive.socket.HandshakeInfo;
+import org.springframework.web.reactive.socket.WebSocketHandler;
+import org.springframework.web.reactive.socket.adapter.StandardWebSocketHandlerAdapter;
+import org.springframework.web.reactive.socket.adapter.StandardWebSocketSession;
 
 /**
- * A WebSocketClient based on standard Java WebSocket API.
+ * {@link WebSocketClient} implementation for use with the Java WebSocket API.
  *
+ * @author Violeta Georgieva
  * @author Rossen Stoyanchev
- * @since 4.0
+ * @since 5.0
+ * @see <a href="https://www.jcp.org/en/jsr/detail?id=356">https://www.jcp.org/en/jsr/detail?id=356</a>
  */
-public class StandardWebSocketClient extends AbstractWebSocketClient {
+public class StandardWebSocketClient extends WebSocketClientSupport implements WebSocketClient {
+
+	private final DataBufferFactory bufferFactory = new DefaultDataBufferFactory();
 
 	private final WebSocketContainer webSocketContainer;
 
-	private final Map<String,Object> userProperties = new HashMap<>();
-
-	private AsyncListenableTaskExecutor taskExecutor = new SimpleAsyncTaskExecutor();
-
 
 	/**
-	 * Default constructor that calls {@code ContainerProvider.getWebSocketContainer()}
-	 * to obtain a (new) {@link WebSocketContainer} instance. Also see constructor
-	 * accepting existing {@code WebSocketContainer} instance.
+	 * Default constructor that calls
+	 * {@code ContainerProvider.getWebSocketContainer()} to obtain a (new)
+	 * {@link WebSocketContainer} instance.
 	 */
 	public StandardWebSocketClient() {
-		this.webSocketContainer = ContainerProvider.getWebSocketContainer();
+		this(ContainerProvider.getWebSocketContainer());
 	}
 
 	/**
 	 * Constructor accepting an existing {@link WebSocketContainer} instance.
-	 * <p>For XML configuration, see {@link WebSocketContainerFactoryBean}. For Java
-	 * configuration, use {@code ContainerProvider.getWebSocketContainer()} to obtain
-	 * the {@code WebSocketContainer} instance.
+	 * @param webSocketContainer a web socket container
 	 */
 	public StandardWebSocketClient(WebSocketContainer webSocketContainer) {
-		Assert.notNull(webSocketContainer, "WebSocketContainer must not be null");
 		this.webSocketContainer = webSocketContainer;
 	}
 
 
 	/**
-	 * The standard Java WebSocket API allows passing "user properties" to the
-	 * server via {@link ClientEndpointConfig#getUserProperties() userProperties}.
-	 * Use this property to configure one or more properties to be passed on
-	 * every handshake.
+	 * Return the configured {@link WebSocketContainer} to use.
 	 */
-	public void setUserProperties(Map<String, Object> userProperties) {
-		if (userProperties != null) {
-			this.userProperties.putAll(userProperties);
-		}
-	}
-
-	/**
-	 * The configured user properties, or {@code null}.
-	 */
-	public Map<String, Object> getUserProperties() {
-		return this.userProperties;
-	}
-
-	/**
-	 * Set an {@link AsyncListenableTaskExecutor} to use when opening connections.
-	 * If this property is set to {@code null}, calls to  any of the
-	 * {@code doHandshake} methods will block until the connection is established.
-	 * <p>By default, an instance of {@code SimpleAsyncTaskExecutor} is used.
-	 */
-	public void setTaskExecutor(AsyncListenableTaskExecutor taskExecutor) {
-		this.taskExecutor = taskExecutor;
-	}
-
-	/**
-	 * Return the configured {@link TaskExecutor}.
-	 */
-	public AsyncListenableTaskExecutor getTaskExecutor() {
-		return this.taskExecutor;
+	public WebSocketContainer getWebSocketContainer() {
+		return this.webSocketContainer;
 	}
 
 
 	@Override
-	protected ListenableFuture<WebSocketSession> doHandshakeInternal(WebSocketHandler webSocketHandler,
-			HttpHeaders headers, final URI uri, List<String> protocols,
-			List<WebSocketExtension> extensions, Map<String, Object> attributes) {
-
-		int port = getPort(uri);
-		InetSocketAddress localAddress = new InetSocketAddress(getLocalHost(), port);
-		InetSocketAddress remoteAddress = new InetSocketAddress(uri.getHost(), port);
-
-		final StandardWebSocketSession session = new StandardWebSocketSession(headers,
-				attributes, localAddress, remoteAddress);
-
-		final ClientEndpointConfig endpointConfig = ClientEndpointConfig.Builder.create()
-				.configurator(new StandardWebSocketClientConfigurator(headers))
-				.preferredSubprotocols(protocols)
-				.extensions(adaptExtensions(extensions)).build();
-
-		endpointConfig.getUserProperties().putAll(getUserProperties());
-
-		final Endpoint endpoint = new StandardWebSocketHandlerAdapter(webSocketHandler, session);
-
-		Callable<WebSocketSession> connectTask = new Callable<WebSocketSession>() {
-			@Override
-			public WebSocketSession call() throws Exception {
-				webSocketContainer.connectToServer(endpoint, endpointConfig, uri);
-				return session;
-			}
-		};
-
-		if (this.taskExecutor != null) {
-			return this.taskExecutor.submitListenable(connectTask);
-		}
-		else {
-			ListenableFutureTask<WebSocketSession> task = new ListenableFutureTask<>(connectTask);
-			task.run();
-			return task;
-		}
+	public Mono<Void> execute(URI url, WebSocketHandler handler) {
+		return execute(url, new HttpHeaders(), handler);
 	}
 
-	private static List<Extension> adaptExtensions(List<WebSocketExtension> extensions) {
-		List<Extension> result = new ArrayList<>();
-		for (WebSocketExtension extension : extensions) {
-			result.add(new WebSocketToStandardExtensionAdapter(extension));
-		}
-		return result;
+	@Override
+	public Mono<Void> execute(URI url, HttpHeaders headers, WebSocketHandler handler) {
+		return executeInternal(url, headers, handler);
 	}
 
-	private InetAddress getLocalHost() {
-		try {
-			return InetAddress.getLocalHost();
-		}
-		catch (UnknownHostException ex) {
-			return InetAddress.getLoopbackAddress();
-		}
+	private Mono<Void> executeInternal(URI url, HttpHeaders requestHeaders, WebSocketHandler handler) {
+		MonoProcessor<Void> completionMono = MonoProcessor.create();
+		return Mono.fromCallable(
+				() -> {
+					List<String> protocols = beforeHandshake(url, requestHeaders, handler);
+					DefaultConfigurator configurator = new DefaultConfigurator(requestHeaders);
+					Endpoint endpoint = createEndpoint(url, handler, completionMono, configurator);
+					ClientEndpointConfig config = createEndpointConfig(configurator, protocols);
+					return this.webSocketContainer.connectToServer(endpoint, config, url);
+				})
+				.subscribeOn(Schedulers.elastic()) // connectToServer is blocking
+				.then(completionMono);
 	}
 
-	private int getPort(URI uri) {
-		if (uri.getPort() == -1) {
-	        String scheme = uri.getScheme().toLowerCase(Locale.ENGLISH);
-	        return ("wss".equals(scheme) ? 443 : 80);
-		}
-		return uri.getPort();
+	private StandardWebSocketHandlerAdapter createEndpoint(URI url, WebSocketHandler handler,
+			MonoProcessor<Void> completion, DefaultConfigurator configurator) {
+
+		return new StandardWebSocketHandlerAdapter(handler, session -> {
+			HttpHeaders responseHeaders = configurator.getResponseHeaders();
+			HandshakeInfo info = afterHandshake(url, responseHeaders);
+			return createWebSocketSession(session, info, completion);
+		});
+	}
+
+	protected StandardWebSocketSession createWebSocketSession(Session session, HandshakeInfo info,
+			MonoProcessor<Void> completion) {
+
+		return new StandardWebSocketSession(session, info, this.bufferFactory, completion);
+	}
+
+	private ClientEndpointConfig createEndpointConfig(Configurator configurator, List<String> subProtocols) {
+		return ClientEndpointConfig.Builder.create()
+				.configurator(configurator)
+				.preferredSubprotocols(subProtocols)
+				.build();
+	}
+
+	protected DataBufferFactory bufferFactory() {
+		return this.bufferFactory;
 	}
 
 
-	private class StandardWebSocketClientConfigurator extends Configurator {
+	private static final class DefaultConfigurator extends Configurator {
 
-		private final HttpHeaders headers;
+		private final HttpHeaders requestHeaders;
 
-		public StandardWebSocketClientConfigurator(HttpHeaders headers) {
-			this.headers = headers;
+		private final HttpHeaders responseHeaders = new HttpHeaders();
+
+		public DefaultConfigurator(HttpHeaders requestHeaders) {
+			this.requestHeaders = requestHeaders;
+		}
+
+		public HttpHeaders getResponseHeaders() {
+			return this.responseHeaders;
 		}
 
 		@Override
 		public void beforeRequest(Map<String, List<String>> requestHeaders) {
-			requestHeaders.putAll(this.headers);
-			if (logger.isTraceEnabled()) {
-				logger.trace("Handshake request headers: " + requestHeaders);
-			}
+			requestHeaders.putAll(this.requestHeaders);
 		}
+
 		@Override
 		public void afterResponse(HandshakeResponse response) {
-			if (logger.isTraceEnabled()) {
-				logger.trace("Handshake response headers: " + response.getHeaders());
-			}
+			response.getHeaders().forEach(this.responseHeaders::put);
 		}
 	}
 

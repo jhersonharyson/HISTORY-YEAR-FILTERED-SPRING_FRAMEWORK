@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,35 +14,44 @@
  * limitations under the License.
  */
 
-package org.springframework.web.servlet.config.annotation;
+package org.springframework.web.reactive.config;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import org.hamcrest.Matchers;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
+import reactor.test.StepVerifier;
 
 import org.springframework.cache.concurrent.ConcurrentMapCache;
-import org.springframework.mock.web.test.MockHttpServletRequest;
-import org.springframework.mock.web.test.MockHttpServletResponse;
-import org.springframework.mock.web.test.MockServletContext;
+import org.springframework.context.support.GenericApplicationContext;
+import org.springframework.core.io.buffer.support.DataBufferTestUtils;
 import org.springframework.http.CacheControl;
-import org.springframework.web.context.support.GenericWebApplicationContext;
-import org.springframework.web.servlet.HandlerMapping;
-import org.springframework.web.servlet.handler.SimpleUrlHandlerMapping;
-import org.springframework.web.servlet.resource.AppCacheManifestTransformer;
-import org.springframework.web.servlet.resource.CachingResourceResolver;
-import org.springframework.web.servlet.resource.CachingResourceTransformer;
-import org.springframework.web.servlet.resource.CssLinkResourceTransformer;
-import org.springframework.web.servlet.resource.PathResourceResolver;
-import org.springframework.web.servlet.resource.ResourceHttpRequestHandler;
-import org.springframework.web.servlet.resource.ResourceResolver;
-import org.springframework.web.servlet.resource.ResourceTransformer;
-import org.springframework.web.servlet.resource.VersionResourceResolver;
-import org.springframework.web.servlet.resource.WebJarsResourceResolver;
+import org.springframework.http.server.PathContainer;
+import org.springframework.mock.http.server.reactive.test.MockServerHttpRequest;
+import org.springframework.mock.web.test.server.MockServerWebExchange;
+import org.springframework.web.reactive.HandlerMapping;
+import org.springframework.web.reactive.handler.SimpleUrlHandlerMapping;
+import org.springframework.web.reactive.resource.AppCacheManifestTransformer;
+import org.springframework.web.reactive.resource.CachingResourceResolver;
+import org.springframework.web.reactive.resource.CachingResourceTransformer;
+import org.springframework.web.reactive.resource.CssLinkResourceTransformer;
+import org.springframework.web.reactive.resource.PathResourceResolver;
+import org.springframework.web.reactive.resource.ResourceResolver;
+import org.springframework.web.reactive.resource.ResourceTransformer;
+import org.springframework.web.reactive.resource.ResourceWebHandler;
+import org.springframework.web.reactive.resource.VersionResourceResolver;
+import org.springframework.web.reactive.resource.WebJarsResourceResolver;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Unit tests for {@link ResourceHandlerRegistry}.
@@ -55,47 +64,40 @@ public class ResourceHandlerRegistryTests {
 
 	private ResourceHandlerRegistration registration;
 
-	private MockHttpServletResponse response;
-
 
 	@Before
-	public void setUp() {
-		this.registry = new ResourceHandlerRegistry(new GenericWebApplicationContext(), new MockServletContext());
-		this.registration = registry.addResourceHandler("/resources/**");
-		this.registration.addResourceLocations("classpath:org/springframework/web/servlet/config/annotation/");
-		this.response = new MockHttpServletResponse();
+	public void setup() {
+		this.registry = new ResourceHandlerRegistry(new GenericApplicationContext());
+		this.registration = this.registry.addResourceHandler("/resources/**");
+		this.registration.addResourceLocations("classpath:org/springframework/web/reactive/config/");
 	}
+
 
 	@Test
 	public void noResourceHandlers() throws Exception {
-		this.registry = new ResourceHandlerRegistry(new GenericWebApplicationContext(), new MockServletContext());
+		this.registry = new ResourceHandlerRegistry(new GenericApplicationContext());
 		assertNull(this.registry.getHandlerMapping());
 	}
 
 	@Test
 	public void mapPathToLocation() throws Exception {
-		MockHttpServletRequest request = new MockHttpServletRequest();
-		request.setMethod("GET");
-		request.setAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE, "/testStylesheet.css");
+		MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get(""));
+		exchange.getAttributes().put(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE,
+				PathContainer.parsePath("/testStylesheet.css"));
 
-		ResourceHttpRequestHandler handler = getHandler("/resources/**");
-		handler.handleRequest(request, this.response);
+		ResourceWebHandler handler = getHandler("/resources/**");
+		handler.handle(exchange).block(Duration.ofSeconds(5));
 
-		assertEquals("test stylesheet content", this.response.getContentAsString());
-	}
-
-	@Test
-	public void cachePeriod() {
-		assertEquals(-1, getHandler("/resources/**").getCacheSeconds());
-
-		this.registration.setCachePeriod(0);
-		assertEquals(0, getHandler("/resources/**").getCacheSeconds());
+		StepVerifier.create(exchange.getResponse().getBody())
+				.consumeNextWith(buf -> assertEquals("test stylesheet content",
+						DataBufferTestUtils.dumpString(buf, StandardCharsets.UTF_8)))
+				.expectComplete()
+				.verify();
 	}
 
 	@Test
 	public void cacheControl() {
-		assertThat(getHandler("/resources/**").getCacheControl(),
-				Matchers.nullValue());
+		assertThat(getHandler("/resources/**").getCacheControl(), Matchers.nullValue());
 
 		this.registration.setCacheControl(CacheControl.noCache().cachePrivate());
 		assertThat(getHandler("/resources/**").getCacheControl().getHeaderValue(),
@@ -104,10 +106,10 @@ public class ResourceHandlerRegistryTests {
 
 	@Test
 	public void order() {
-		assertEquals(Integer.MAX_VALUE -1, registry.getHandlerMapping().getOrder());
+		assertEquals(Integer.MAX_VALUE -1, this.registry.getHandlerMapping().getOrder());
 
-		registry.setOrder(0);
-		assertEquals(0, registry.getHandlerMapping().getOrder());
+		this.registry.setOrder(0);
+		assertEquals(0, this.registry.getHandlerMapping().getOrder());
 	}
 
 	@Test
@@ -122,7 +124,7 @@ public class ResourceHandlerRegistryTests {
 		ResourceTransformer mockTransformer = Mockito.mock(ResourceTransformer.class);
 		this.registration.resourceChain(true).addResolver(mockResolver).addTransformer(mockTransformer);
 
-		ResourceHttpRequestHandler handler = getHandler("/resources/**");
+		ResourceWebHandler handler = getHandler("/resources/**");
 		List<ResourceResolver> resolvers = handler.getResourceResolvers();
 		assertThat(resolvers.toString(), resolvers, Matchers.hasSize(4));
 		assertThat(resolvers.get(0), Matchers.instanceOf(CachingResourceResolver.class));
@@ -142,7 +144,7 @@ public class ResourceHandlerRegistryTests {
 	public void resourceChainWithoutCaching() throws Exception {
 		this.registration.resourceChain(false);
 
-		ResourceHttpRequestHandler handler = getHandler("/resources/**");
+		ResourceWebHandler handler = getHandler("/resources/**");
 		List<ResourceResolver> resolvers = handler.getResourceResolvers();
 		assertThat(resolvers, Matchers.hasSize(2));
 		assertThat(resolvers.get(0), Matchers.instanceOf(WebJarsResourceResolver.class));
@@ -161,7 +163,7 @@ public class ResourceHandlerRegistryTests {
 		this.registration.resourceChain(true).addResolver(versionResolver)
 				.addTransformer(new AppCacheManifestTransformer());
 
-		ResourceHttpRequestHandler handler = getHandler("/resources/**");
+		ResourceWebHandler handler = getHandler("/resources/**");
 		List<ResourceResolver> resolvers = handler.getResourceResolvers();
 		assertThat(resolvers.toString(), resolvers, Matchers.hasSize(4));
 		assertThat(resolvers.get(0), Matchers.instanceOf(CachingResourceResolver.class));
@@ -186,7 +188,7 @@ public class ResourceHandlerRegistryTests {
 		AppCacheManifestTransformer appCacheTransformer = Mockito.mock(AppCacheManifestTransformer.class);
 		CssLinkResourceTransformer cssLinkTransformer = new CssLinkResourceTransformer();
 
-		this.registration.setCachePeriod(3600)
+		this.registration.setCacheControl(CacheControl.maxAge(3600, TimeUnit.MILLISECONDS))
 				.resourceChain(false)
 					.addResolver(cachingResolver)
 					.addResolver(versionResolver)
@@ -196,7 +198,7 @@ public class ResourceHandlerRegistryTests {
 					.addTransformer(appCacheTransformer)
 					.addTransformer(cssLinkTransformer);
 
-		ResourceHttpRequestHandler handler = getHandler("/resources/**");
+		ResourceWebHandler handler = getHandler("/resources/**");
 		List<ResourceResolver> resolvers = handler.getResourceResolvers();
 		assertThat(resolvers.toString(), resolvers, Matchers.hasSize(4));
 		assertThat(resolvers.get(0), Matchers.sameInstance(cachingResolver));
@@ -211,9 +213,10 @@ public class ResourceHandlerRegistryTests {
 		assertThat(transformers.get(2), Matchers.sameInstance(cssLinkTransformer));
 	}
 
-	private ResourceHttpRequestHandler getHandler(String pathPattern) {
-		SimpleUrlHandlerMapping handlerMapping = (SimpleUrlHandlerMapping) this.registry.getHandlerMapping();
-		return (ResourceHttpRequestHandler) handlerMapping.getUrlMap().get(pathPattern);
+
+	private ResourceWebHandler getHandler(String pathPattern) {
+		SimpleUrlHandlerMapping mapping = (SimpleUrlHandlerMapping) this.registry.getHandlerMapping();
+		return (ResourceWebHandler) mapping.getUrlMap().get(pathPattern);
 	}
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,6 +34,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.core.io.support.ResourcePatternResolver;
+import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 
 /**
@@ -92,6 +93,7 @@ public class GenericApplicationContext extends AbstractApplicationContext implem
 
 	private final DefaultListableBeanFactory beanFactory;
 
+	@Nullable
 	private ResourceLoader resourceLoader;
 
 	private boolean customClassLoader = false;
@@ -125,7 +127,7 @@ public class GenericApplicationContext extends AbstractApplicationContext implem
 	 * @see #registerBeanDefinition
 	 * @see #refresh
 	 */
-	public GenericApplicationContext(ApplicationContext parent) {
+	public GenericApplicationContext(@Nullable ApplicationContext parent) {
 		this();
 		setParent(parent);
 	}
@@ -149,7 +151,7 @@ public class GenericApplicationContext extends AbstractApplicationContext implem
 	 * @see org.springframework.beans.factory.config.ConfigurableBeanFactory#setParentBeanFactory
 	 */
 	@Override
-	public void setParent(ApplicationContext parent) {
+	public void setParent(@Nullable ApplicationContext parent) {
 		super.setParent(parent);
 		this.beanFactory.setParentBeanFactory(getInternalParentBeanFactory());
 	}
@@ -237,12 +239,13 @@ public class GenericApplicationContext extends AbstractApplicationContext implem
 	}
 
 	@Override
-	public void setClassLoader(ClassLoader classLoader) {
+	public void setClassLoader(@Nullable ClassLoader classLoader) {
 		super.setClassLoader(classLoader);
 		this.customClassLoader = true;
 	}
 
 	@Override
+	@Nullable
 	public ClassLoader getClassLoader() {
 		if (this.resourceLoader != null && !this.customClassLoader) {
 			return this.resourceLoader.getClassLoader();
@@ -366,8 +369,9 @@ public class GenericApplicationContext extends AbstractApplicationContext implem
 	 * @param customizers one or more callbacks for customizing the
 	 * factory's {@link BeanDefinition}, e.g. setting a lazy-init or primary flag
 	 * @since 5.0
+	 * @see #registerBean(String, Class, Supplier, BeanDefinitionCustomizer...)
 	 */
-	public <T> void registerBean(Class<T> beanClass, BeanDefinitionCustomizer... customizers) {
+	public final <T> void registerBean(Class<T> beanClass, BeanDefinitionCustomizer... customizers) {
 		registerBean(null, beanClass, null, customizers);
 	}
 
@@ -381,8 +385,9 @@ public class GenericApplicationContext extends AbstractApplicationContext implem
 	 * @param customizers one or more callbacks for customizing the
 	 * factory's {@link BeanDefinition}, e.g. setting a lazy-init or primary flag
 	 * @since 5.0
+	 * @see #registerBean(String, Class, Supplier, BeanDefinitionCustomizer...)
 	 */
-	public <T> void registerBean(String beanName, Class<T> beanClass, BeanDefinitionCustomizer... customizers) {
+	public final <T> void registerBean(@Nullable String beanName, Class<T> beanClass, BeanDefinitionCustomizer... customizers) {
 		registerBean(beanName, beanClass, null, customizers);
 	}
 
@@ -396,8 +401,9 @@ public class GenericApplicationContext extends AbstractApplicationContext implem
 	 * @param customizers one or more callbacks for customizing the
 	 * factory's {@link BeanDefinition}, e.g. setting a lazy-init or primary flag
 	 * @since 5.0
+	 * @see #registerBean(String, Class, Supplier, BeanDefinitionCustomizer...)
 	 */
-	public <T> void registerBean(Class<T> beanClass, Supplier<T> supplier, BeanDefinitionCustomizer... customizers) {
+	public final <T> void registerBean(Class<T> beanClass, Supplier<T> supplier, BeanDefinitionCustomizer... customizers) {
 		registerBean(null, beanClass, supplier, customizers);
 	}
 
@@ -406,20 +412,24 @@ public class GenericApplicationContext extends AbstractApplicationContext implem
 	 * obtaining a new instance (typically declared as a lambda expression or
 	 * method reference), optionally customizing its bean definition metadata
 	 * (again typically declared as a lambda expression or method reference).
+	 * <p>This method can be overridden to adapt the registration mechanism for
+	 * all {@code registerBean} methods (since they all delegate to this one).
 	 * @param beanName the name of the bean (may be {@code null})
-	 * @param beanClass the class of the bean
+	 * @param beanClass the class of the bean (may be {@code null} if a name is given)
 	 * @param supplier a callback for creating an instance of the bean
 	 * @param customizers one or more callbacks for customizing the
 	 * factory's {@link BeanDefinition}, e.g. setting a lazy-init or primary flag
 	 * @since 5.0
 	 */
-	public <T> void registerBean(String beanName, Class<T> beanClass, Supplier<T> supplier,
+	public <T> void registerBean(@Nullable String beanName, Class<T> beanClass, @Nullable Supplier<T> supplier,
 			BeanDefinitionCustomizer... customizers) {
 
-		Assert.isTrue(beanName != null || beanClass != null, "Either bean name or bean class must be specified");
+		BeanDefinitionBuilder builder = (supplier != null ?
+				BeanDefinitionBuilder.genericBeanDefinition(beanClass, supplier) :
+				BeanDefinitionBuilder.genericBeanDefinition(beanClass));
+		BeanDefinition beanDefinition = builder.applyCustomizers(customizers).getRawBeanDefinition();
+
 		String nameToUse = (beanName != null ? beanName : beanClass.getName());
-		BeanDefinition beanDefinition = BeanDefinitionBuilder.genericBeanDefinition(beanClass, supplier).
-				applyCustomizers(customizers).getRawBeanDefinition();
 		registerBeanDefinition(nameToUse, beanDefinition);
 	}
 

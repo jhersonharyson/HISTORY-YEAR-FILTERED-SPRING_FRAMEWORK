@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.BeanDefinitionStoreException;
 import org.springframework.beans.factory.annotation.AnnotatedBeanDefinition;
 import org.springframework.beans.factory.annotation.AnnotatedGenericBeanDefinition;
+import org.springframework.beans.factory.annotation.Lookup;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.ResourceLoaderAware;
@@ -41,14 +42,17 @@ import org.springframework.core.env.EnvironmentCapable;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.core.io.support.ResourcePatternResolver;
 import org.springframework.core.io.support.ResourcePatternUtils;
+import org.springframework.core.type.AnnotationMetadata;
 import org.springframework.core.type.classreading.CachingMetadataReaderFactory;
 import org.springframework.core.type.classreading.MetadataReader;
 import org.springframework.core.type.classreading.MetadataReaderFactory;
 import org.springframework.core.type.filter.AnnotationTypeFilter;
 import org.springframework.core.type.filter.AssignableTypeFilter;
 import org.springframework.core.type.filter.TypeFilter;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Controller;
 import org.springframework.stereotype.Indexed;
@@ -94,14 +98,19 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 
 	private final List<TypeFilter> excludeFilters = new LinkedList<>();
 
+	@Nullable
 	private Environment environment;
 
+	@Nullable
 	private ConditionEvaluator conditionEvaluator;
 
+	@Nullable
 	private ResourcePatternResolver resourcePatternResolver;
 
+	@Nullable
 	private MetadataReaderFactory metadataReaderFactory;
 
+	@Nullable
 	private CandidateComponentsIndex componentsIndex;
 
 
@@ -229,12 +238,16 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 
 	@Override
 	public final Environment getEnvironment() {
+		if (this.environment == null) {
+			this.environment = new StandardEnvironment();
+		}
 		return this.environment;
 	}
 
 	/**
 	 * Return the {@link BeanDefinitionRegistry} used by this scanner, if any.
 	 */
+	@Nullable
 	protected BeanDefinitionRegistry getRegistry() {
 		return null;
 	}
@@ -248,7 +261,7 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 	 * @see org.springframework.core.io.support.PathMatchingResourcePatternResolver
 	 */
 	@Override
-	public void setResourceLoader(ResourceLoader resourceLoader) {
+	public void setResourceLoader(@Nullable ResourceLoader resourceLoader) {
 		this.resourcePatternResolver = ResourcePatternUtils.getResourcePatternResolver(resourceLoader);
 		this.metadataReaderFactory = new CachingMetadataReaderFactory(resourceLoader);
 		this.componentsIndex = CandidateComponentsIndexLoader.loadIndex(this.resourcePatternResolver.getClassLoader());
@@ -258,6 +271,13 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 	 * Return the ResourceLoader that this component provider uses.
 	 */
 	public final ResourceLoader getResourceLoader() {
+		return getResourcePatternResolver();
+	}
+
+	private ResourcePatternResolver getResourcePatternResolver() {
+		if (this.resourcePatternResolver == null) {
+			this.resourcePatternResolver = new PathMatchingResourcePatternResolver();
+		}
 		return this.resourcePatternResolver;
 	}
 
@@ -276,6 +296,9 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 	 * Return the MetadataReaderFactory used by this component provider.
 	 */
 	public final MetadataReaderFactory getMetadataReaderFactory() {
+		if (this.metadataReaderFactory == null) {
+			this.metadataReaderFactory = new CachingMetadataReaderFactory();
+		}
 		return this.metadataReaderFactory;
 	}
 
@@ -286,15 +309,68 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 	 * @return a corresponding Set of autodetected bean definitions
 	 */
 	public Set<BeanDefinition> findCandidateComponents(String basePackage) {
-		if (isIndexSupported()) {
-			return addCandidateComponentsFromIndex(basePackage);
+		if (this.componentsIndex != null && indexSupportsIncludeFilters()) {
+			return addCandidateComponentsFromIndex(this.componentsIndex, basePackage);
 		}
 		else {
 			return scanCandidateComponents(basePackage);
 		}
 	}
 
-	protected Set<BeanDefinition> addCandidateComponentsFromIndex(String basePackage) {
+	/**
+	 * Determine if the index can be used by this instance.
+	 * @return {@code true} if the index is available and the configuration of this
+	 * instance is supported by it, {@code false} otherwise
+	 * @since 5.0
+	 */
+	private boolean indexSupportsIncludeFilters() {
+		for (TypeFilter includeFilter : this.includeFilters) {
+			if (!indexSupportsIncludeFilter(includeFilter)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Determine if the specified include {@link TypeFilter} is supported by the index.
+	 * @param filter the filter to check
+	 * @return whether the index supports this include filter
+	 * @since 5.0
+	 * @see #extractStereotype(TypeFilter)
+	 */
+	private boolean indexSupportsIncludeFilter(TypeFilter filter) {
+		if (filter instanceof AnnotationTypeFilter) {
+			Class<? extends Annotation> annotation = ((AnnotationTypeFilter) filter).getAnnotationType();
+			return (AnnotationUtils.isAnnotationDeclaredLocally(Indexed.class, annotation) ||
+					annotation.getName().startsWith("javax."));
+		}
+		if (filter instanceof AssignableTypeFilter) {
+			Class<?> target = ((AssignableTypeFilter) filter).getTargetType();
+			return AnnotationUtils.isAnnotationDeclaredLocally(Indexed.class, target);
+		}
+		return false;
+	}
+
+	/**
+	 * Extract the stereotype to use for the specified compatible filter.
+	 * @param filter the filter to handle
+	 * @return the stereotype in the index matching this filter
+	 * @since 5.0
+	 * @see #indexSupportsIncludeFilter(TypeFilter)
+	 */
+	@Nullable
+	private String extractStereotype(TypeFilter filter) {
+		if (filter instanceof AnnotationTypeFilter) {
+			return ((AnnotationTypeFilter) filter).getAnnotationType().getName();
+		}
+		if (filter instanceof AssignableTypeFilter) {
+			return ((AssignableTypeFilter) filter).getTargetType().getName();
+		}
+		return null;
+	}
+
+	private Set<BeanDefinition> addCandidateComponentsFromIndex(CandidateComponentsIndex index, String basePackage) {
 		Set<BeanDefinition> candidates = new LinkedHashSet<>();
 		try {
 			Set<String> types = new HashSet<>();
@@ -303,12 +379,12 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 				if (stereotype == null) {
 					throw new IllegalArgumentException("Failed to extract stereotype from "+ filter);
 				}
-				types.addAll(this.componentsIndex.getCandidateTypes(basePackage, stereotype));
+				types.addAll(index.getCandidateTypes(basePackage, stereotype));
 			}
 			boolean traceEnabled = logger.isTraceEnabled();
 			boolean debugEnabled = logger.isDebugEnabled();
 			for (String type : types) {
-				MetadataReader metadataReader = this.metadataReaderFactory.getMetadataReader(type);
+				MetadataReader metadataReader = getMetadataReaderFactory().getMetadataReader(type);
 				if (isCandidateComponent(metadataReader)) {
 					AnnotatedGenericBeanDefinition sbd = new AnnotatedGenericBeanDefinition(
 							metadataReader.getAnnotationMetadata());
@@ -337,12 +413,12 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 		return candidates;
 	}
 
-	protected Set<BeanDefinition> scanCandidateComponents(String basePackage) {
+	private Set<BeanDefinition> scanCandidateComponents(String basePackage) {
 		Set<BeanDefinition> candidates = new LinkedHashSet<>();
 		try {
 			String packageSearchPath = ResourcePatternResolver.CLASSPATH_ALL_URL_PREFIX +
 					resolveBasePackage(basePackage) + '/' + this.resourcePattern;
-			Resource[] resources = this.resourcePatternResolver.getResources(packageSearchPath);
+			Resource[] resources = getResourcePatternResolver().getResources(packageSearchPath);
 			boolean traceEnabled = logger.isTraceEnabled();
 			boolean debugEnabled = logger.isDebugEnabled();
 			for (Resource resource : resources) {
@@ -351,7 +427,7 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 				}
 				if (resource.isReadable()) {
 					try {
-						MetadataReader metadataReader = this.metadataReaderFactory.getMetadataReader(resource);
+						MetadataReader metadataReader = getMetadataReaderFactory().getMetadataReader(resource);
 						if (isCandidateComponent(metadataReader)) {
 							ScannedGenericBeanDefinition sbd = new ScannedGenericBeanDefinition(metadataReader);
 							sbd.setResource(resource);
@@ -402,7 +478,7 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 	 * @return the pattern specification to be used for package searching
 	 */
 	protected String resolveBasePackage(String basePackage) {
-		return ClassUtils.convertClassNameToResourcePath(this.environment.resolveRequiredPlaceholders(basePackage));
+		return ClassUtils.convertClassNameToResourcePath(getEnvironment().resolveRequiredPlaceholders(basePackage));
 	}
 
 	/**
@@ -413,12 +489,12 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 	 */
 	protected boolean isCandidateComponent(MetadataReader metadataReader) throws IOException {
 		for (TypeFilter tf : this.excludeFilters) {
-			if (tf.match(metadataReader, this.metadataReaderFactory)) {
+			if (tf.match(metadataReader, getMetadataReaderFactory())) {
 				return false;
 			}
 		}
 		for (TypeFilter tf : this.includeFilters) {
-			if (tf.match(metadataReader, this.metadataReaderFactory)) {
+			if (tf.match(metadataReader, getMetadataReaderFactory())) {
 				return isConditionMatch(metadataReader);
 			}
 		}
@@ -433,73 +509,26 @@ public class ClassPathScanningCandidateComponentProvider implements EnvironmentC
 	 */
 	private boolean isConditionMatch(MetadataReader metadataReader) {
 		if (this.conditionEvaluator == null) {
-			this.conditionEvaluator = new ConditionEvaluator(getRegistry(), getEnvironment(), getResourceLoader());
+			this.conditionEvaluator =
+					new ConditionEvaluator(getRegistry(), this.environment, this.resourcePatternResolver);
 		}
 		return !this.conditionEvaluator.shouldSkip(metadataReader.getAnnotationMetadata());
 	}
 
 	/**
 	 * Determine whether the given bean definition qualifies as candidate.
-	 * <p>The default implementation checks whether the class is concrete
-	 * (i.e. not abstract and not an interface). Can be overridden in subclasses.
+	 * <p>The default implementation checks whether the class is not an interface
+	 * and not dependent on an enclosing class.
+	 * <p>Can be overridden in subclasses.
 	 * @param beanDefinition the bean definition to check
 	 * @return whether the bean definition qualifies as a candidate component
 	 */
 	protected boolean isCandidateComponent(AnnotatedBeanDefinition beanDefinition) {
-		return (beanDefinition.getMetadata().isConcrete() && beanDefinition.getMetadata().isIndependent());
+		AnnotationMetadata metadata = beanDefinition.getMetadata();
+		return (metadata.isIndependent() && (metadata.isConcrete() ||
+				(metadata.isAbstract() && metadata.hasAnnotatedMethods(Lookup.class.getName()))));
 	}
 
-	/**
-	 * Determine if the index can be used by this instance.
-	 * @return {@code true} if the index is available and the configuration of this
-	 * instance is supported by it, {@code false otherwise}.
-	 */
-	protected boolean isIndexSupported() {
-		if (this.componentsIndex == null) {
-			return false;
-		}
-		for (TypeFilter includeFilter : this.includeFilters) {
-			if (!isIndexSupportsIncludeFilter(includeFilter)) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	/**
-	 * Determine if the specified include {@link TypeFilter} is supported by the index.
-	 * @param filter the filter to check
-	 * @return whether the index supports this include filter
-	 * @see #extractStereotype(TypeFilter)
-	 */
-	protected boolean isIndexSupportsIncludeFilter(TypeFilter filter) {
-		if (filter instanceof AnnotationTypeFilter) {
-			Class<? extends Annotation> annotation = ((AnnotationTypeFilter) filter).getAnnotationType();
-			return (AnnotationUtils.isAnnotationDeclaredLocally(Indexed.class, annotation)
-					|| annotation.getName().startsWith("javax."));
-		}
-		if (filter instanceof AssignableTypeFilter) {
-			Class<?> target = ((AssignableTypeFilter) filter).getTargetType();
-			return AnnotationUtils.isAnnotationDeclaredLocally(Indexed.class, target);
-		}
-		return false;
-	}
-
-	/**
-	 * Extract the stereotype to use for the specified compatible filter.
-	 * @param filter the filter to handle
-	 * @return the stereotype in the index matching this filter
-	 * @see #isIndexSupportsIncludeFilter(TypeFilter)
-	 */
-	protected String extractStereotype(TypeFilter filter) {
-		if (filter instanceof AnnotationTypeFilter) {
-			return ((AnnotationTypeFilter) filter).getAnnotationType().getName();
-		}
-		if (filter instanceof AssignableTypeFilter) {
-			return ((AssignableTypeFilter) filter).getTargetType().getName();
-		}
-		return null;
-	}
 
 	/**
 	 * Clear the local metadata cache, if any, removing all cached class metadata.

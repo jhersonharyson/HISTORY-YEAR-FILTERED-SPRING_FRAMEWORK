@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -217,7 +217,8 @@ public class DefaultStompSessionTests {
 		StompHeaders stompHeaders = StompHeaders.readOnlyStompHeaders(accessor.getNativeHeaders());
 		when(this.sessionHandler.getPayloadType(stompHeaders)).thenReturn(String.class);
 
-		this.session.handleMessage(MessageBuilder.createMessage(payload.getBytes(StandardCharsets.UTF_8), accessor.getMessageHeaders()));
+		this.session.handleMessage(MessageBuilder.createMessage(
+				payload.getBytes(StandardCharsets.UTF_8), accessor.getMessageHeaders()));
 
 		verify(this.sessionHandler).getPayloadType(stompHeaders);
 		verify(this.sessionHandler).handleFrame(stompHeaders, payload);
@@ -469,6 +470,34 @@ public class DefaultStompSessionTests {
 		StompHeaders stompHeaders = StompHeaders.readOnlyStompHeaders(accessor.getNativeHeaders());
 		assertEquals(stompHeaders.toString(), 1, stompHeaders.size());
 		assertEquals(subscription.getSubscriptionId(), stompHeaders.getId());
+	}
+
+	@Test // SPR-15131
+	public void unsubscribeWithCustomHeader() throws Exception {
+		this.session.afterConnected(this.connection);
+		assertTrue(this.session.isConnected());
+
+		String headerName = "durable-subscription-name";
+		String headerValue = "123";
+
+		StompHeaders subscribeHeaders = new StompHeaders();
+		subscribeHeaders.setDestination("/topic/foo");
+		subscribeHeaders.set(headerName, headerValue);
+		StompFrameHandler frameHandler = mock(StompFrameHandler.class);
+		Subscription subscription = this.session.subscribe(subscribeHeaders, frameHandler);
+
+		StompHeaders unsubscribeHeaders = new StompHeaders();
+		unsubscribeHeaders.set(headerName,  subscription.getSubscriptionHeaders().getFirst(headerName));
+		subscription.unsubscribe(unsubscribeHeaders);
+
+		Message<byte[]> message = this.messageCaptor.getValue();
+		StompHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
+		assertEquals(StompCommand.UNSUBSCRIBE, accessor.getCommand());
+
+		StompHeaders stompHeaders = StompHeaders.readOnlyStompHeaders(accessor.getNativeHeaders());
+		assertEquals(stompHeaders.toString(), 2, stompHeaders.size());
+		assertEquals(subscription.getSubscriptionId(), stompHeaders.getId());
+		assertEquals(headerValue, stompHeaders.getFirst(headerName));
 	}
 
 	@Test

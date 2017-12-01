@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.springframework.web.method.annotation;
+package org.springframework.web.reactive.result.method.annotation;
 
 import java.lang.reflect.Method;
 import java.time.Instant;
@@ -22,80 +22,74 @@ import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.Map;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.core.MethodParameter;
+import org.springframework.core.ReactiveAdapterRegistry;
 import org.springframework.core.annotation.SynthesizingMethodParameter;
 import org.springframework.format.support.DefaultFormattingConversionService;
-import org.springframework.mock.web.test.MockHttpServletRequest;
-import org.springframework.mock.web.test.MockHttpServletResponse;
+import org.springframework.mock.http.server.reactive.test.MockServerHttpRequest;
+import org.springframework.mock.web.test.server.MockServerWebExchange;
 import org.springframework.util.ReflectionUtils;
-import org.springframework.web.bind.ServletRequestBindingException;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.support.ConfigurableWebBindingInitializer;
-import org.springframework.web.bind.support.DefaultDataBinderFactory;
-import org.springframework.web.context.request.NativeWebRequest;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletWebRequest;
-import org.springframework.web.context.support.GenericWebApplicationContext;
+import org.springframework.web.reactive.BindingContext;
+import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.server.ServerWebInputException;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
- * Test fixture with {@link org.springframework.web.method.annotation.RequestHeaderMethodArgumentResolver}.
+ * Unit tests for {@link RequestHeaderMethodArgumentResolver}.
  *
- * @author Arjen Poutsma
  * @author Rossen Stoyanchev
  */
 public class RequestHeaderMethodArgumentResolverTests {
 
 	private RequestHeaderMethodArgumentResolver resolver;
 
+	private BindingContext bindingContext;
+
 	private MethodParameter paramNamedDefaultValueStringHeader;
 	private MethodParameter paramNamedValueStringArray;
 	private MethodParameter paramSystemProperty;
-	private MethodParameter paramContextPath;
 	private MethodParameter paramResolvedNameWithExpression;
 	private MethodParameter paramResolvedNameWithPlaceholder;
 	private MethodParameter paramNamedValueMap;
 	private MethodParameter paramDate;
 	private MethodParameter paramInstant;
-
-	private MockHttpServletRequest servletRequest;
-
-	private NativeWebRequest webRequest;
+	private MethodParameter paramMono;
 
 
 	@Before
-	@SuppressWarnings("resource")
-	public void setUp() throws Exception {
-		GenericWebApplicationContext context = new GenericWebApplicationContext();
+	public void setup() throws Exception {
+		AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
 		context.refresh();
-		resolver = new RequestHeaderMethodArgumentResolver(context.getBeanFactory());
+		ReactiveAdapterRegistry adapterRegistry = ReactiveAdapterRegistry.getSharedInstance();
+		this.resolver = new RequestHeaderMethodArgumentResolver(context.getBeanFactory(), adapterRegistry);
+
+		ConfigurableWebBindingInitializer initializer = new ConfigurableWebBindingInitializer();
+		initializer.setConversionService(new DefaultFormattingConversionService());
+		this.bindingContext = new BindingContext(initializer);
 
 		Method method = ReflectionUtils.findMethod(getClass(), "params", (Class<?>[]) null);
-		paramNamedDefaultValueStringHeader = new SynthesizingMethodParameter(method, 0);
-		paramNamedValueStringArray = new SynthesizingMethodParameter(method, 1);
-		paramSystemProperty = new SynthesizingMethodParameter(method, 2);
-		paramContextPath = new SynthesizingMethodParameter(method, 3);
-		paramResolvedNameWithExpression = new SynthesizingMethodParameter(method, 4);
-		paramResolvedNameWithPlaceholder = new SynthesizingMethodParameter(method, 5);
-		paramNamedValueMap = new SynthesizingMethodParameter(method, 6);
-		paramDate = new SynthesizingMethodParameter(method, 7);
-		paramInstant = new SynthesizingMethodParameter(method, 8);
-
-		servletRequest = new MockHttpServletRequest();
-		webRequest = new ServletWebRequest(servletRequest, new MockHttpServletResponse());
-
-		// Expose request to the current thread (for SpEL expressions)
-		RequestContextHolder.setRequestAttributes(webRequest);
-	}
-
-	@After
-	public void teardown() {
-		RequestContextHolder.resetRequestAttributes();
+		this.paramNamedDefaultValueStringHeader = new SynthesizingMethodParameter(method, 0);
+		this.paramNamedValueStringArray = new SynthesizingMethodParameter(method, 1);
+		this.paramSystemProperty = new SynthesizingMethodParameter(method, 2);
+		this.paramResolvedNameWithExpression = new SynthesizingMethodParameter(method, 3);
+		this.paramResolvedNameWithPlaceholder = new SynthesizingMethodParameter(method, 4);
+		this.paramNamedValueMap = new SynthesizingMethodParameter(method, 5);
+		this.paramDate = new SynthesizingMethodParameter(method, 6);
+		this.paramInstant = new SynthesizingMethodParameter(method, 7);
+		this.paramMono = new SynthesizingMethodParameter(method, 8);
 	}
 
 
@@ -104,31 +98,50 @@ public class RequestHeaderMethodArgumentResolverTests {
 		assertTrue("String parameter not supported", resolver.supportsParameter(paramNamedDefaultValueStringHeader));
 		assertTrue("String array parameter not supported", resolver.supportsParameter(paramNamedValueStringArray));
 		assertFalse("non-@RequestParam parameter supported", resolver.supportsParameter(paramNamedValueMap));
+		try {
+			this.resolver.supportsParameter(this.paramMono);
+			fail();
+		}
+		catch (IllegalStateException ex) {
+			assertTrue("Unexpected error message:\n" + ex.getMessage(),
+					ex.getMessage().startsWith(
+							"RequestHeaderMethodArgumentResolver doesn't support reactive type wrapper"));
+		}
 	}
 
 	@Test
 	public void resolveStringArgument() throws Exception {
 		String expected = "foo";
-		servletRequest.addHeader("name", expected);
+		ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/").header("name", expected));
 
-		Object result = resolver.resolveArgument(paramNamedDefaultValueStringHeader, null, webRequest, null);
+		Mono<Object> mono = this.resolver.resolveArgument(
+				this.paramNamedDefaultValueStringHeader, this.bindingContext, exchange);
+
+		Object result = mono.block();
 		assertTrue(result instanceof String);
 		assertEquals(expected, result);
 	}
 
 	@Test
 	public void resolveStringArrayArgument() throws Exception {
-		String[] expected = new String[] {"foo", "bar"};
-		servletRequest.addHeader("name", expected);
+		MockServerHttpRequest request = MockServerHttpRequest.get("/").header("name", "foo", "bar").build();
+		ServerWebExchange exchange = MockServerWebExchange.from(request);
 
-		Object result = resolver.resolveArgument(paramNamedValueStringArray, null, webRequest, null);
+		Mono<Object> mono = this.resolver.resolveArgument(
+				this.paramNamedValueStringArray, this.bindingContext, exchange);
+
+		Object result = mono.block();
 		assertTrue(result instanceof String[]);
-		assertArrayEquals(expected, (String[]) result);
+		assertArrayEquals(new String[] {"foo", "bar"}, (String[]) result);
 	}
 
 	@Test
 	public void resolveDefaultValue() throws Exception {
-		Object result = resolver.resolveArgument(paramNamedDefaultValueStringHeader, null, webRequest, null);
+		MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/"));
+		Mono<Object> mono = this.resolver.resolveArgument(
+				this.paramNamedDefaultValueStringHeader, this.bindingContext, exchange);
+
+		Object result = mono.block();
 		assertTrue(result instanceof String);
 		assertEquals("bar", result);
 	}
@@ -137,7 +150,11 @@ public class RequestHeaderMethodArgumentResolverTests {
 	public void resolveDefaultValueFromSystemProperty() throws Exception {
 		System.setProperty("systemProperty", "bar");
 		try {
-			Object result = resolver.resolveArgument(paramSystemProperty, null, webRequest, null);
+			Mono<Object> mono = this.resolver.resolveArgument(
+					this.paramSystemProperty, this.bindingContext,
+					MockServerWebExchange.from(MockServerHttpRequest.get("/")));
+
+			Object result = mono.block();
 			assertTrue(result instanceof String);
 			assertEquals("bar", result);
 		}
@@ -149,11 +166,15 @@ public class RequestHeaderMethodArgumentResolverTests {
 	@Test
 	public void resolveNameFromSystemPropertyThroughExpression() throws Exception {
 		String expected = "foo";
-		servletRequest.addHeader("bar", expected);
+		MockServerHttpRequest request = MockServerHttpRequest.get("/").header("bar", expected).build();
+		ServerWebExchange exchange = MockServerWebExchange.from(request);
 
 		System.setProperty("systemProperty", "bar");
 		try {
-			Object result = resolver.resolveArgument(paramResolvedNameWithExpression, null, webRequest, null);
+			Mono<Object> mono = this.resolver.resolveArgument(
+					this.paramResolvedNameWithExpression, this.bindingContext, exchange);
+
+			Object result = mono.block();
 			assertTrue(result instanceof String);
 			assertEquals(expected, result);
 		}
@@ -165,11 +186,15 @@ public class RequestHeaderMethodArgumentResolverTests {
 	@Test
 	public void resolveNameFromSystemPropertyThroughPlaceholder() throws Exception {
 		String expected = "foo";
-		servletRequest.addHeader("bar", expected);
+		MockServerHttpRequest request = MockServerHttpRequest.get("/").header("bar", expected).build();
+		ServerWebExchange exchange = MockServerWebExchange.from(request);
 
 		System.setProperty("systemProperty", "bar");
 		try {
-			Object result = resolver.resolveArgument(paramResolvedNameWithPlaceholder, null, webRequest, null);
+			Mono<Object> mono = this.resolver.resolveArgument(
+					this.paramResolvedNameWithPlaceholder, this.bindingContext, exchange);
+
+			Object result = mono.block();
 			assertTrue(result instanceof String);
 			assertEquals(expected, result);
 		}
@@ -179,29 +204,26 @@ public class RequestHeaderMethodArgumentResolverTests {
 	}
 
 	@Test
-	public void resolveDefaultValueFromRequest() throws Exception {
-		servletRequest.setContextPath("/bar");
-
-		Object result = resolver.resolveArgument(paramContextPath, null, webRequest, null);
-		assertTrue(result instanceof String);
-		assertEquals("/bar", result);
-	}
-
-	@Test(expected = ServletRequestBindingException.class)
 	public void notFound() throws Exception {
-		resolver.resolveArgument(paramNamedValueStringArray, null, webRequest, null);
+		Mono<Object> mono = resolver.resolveArgument(
+				this.paramNamedValueStringArray, this.bindingContext,
+				MockServerWebExchange.from(MockServerHttpRequest.get("/")));
+
+		StepVerifier.create(mono)
+				.expectNextCount(0)
+				.expectError(ServerWebInputException.class)
+				.verify();
 	}
 
 	@Test
 	@SuppressWarnings("deprecation")
 	public void dateConversion() throws Exception {
 		String rfc1123val = "Thu, 21 Apr 2016 17:11:08 +0100";
-		servletRequest.addHeader("name", rfc1123val);
+		MockServerHttpRequest request = MockServerHttpRequest.get("/").header("name", rfc1123val).build();
+		ServerWebExchange exchange = MockServerWebExchange.from(request);
 
-		ConfigurableWebBindingInitializer bindingInitializer = new ConfigurableWebBindingInitializer();
-		bindingInitializer.setConversionService(new DefaultFormattingConversionService());
-		Object result = resolver.resolveArgument(paramDate, null, webRequest,
-				new DefaultDataBinderFactory(bindingInitializer));
+		Mono<Object> mono = this.resolver.resolveArgument(this.paramDate, this.bindingContext, exchange);
+		Object result = mono.block();
 
 		assertTrue(result instanceof Date);
 		assertEquals(new Date(rfc1123val), result);
@@ -210,28 +232,28 @@ public class RequestHeaderMethodArgumentResolverTests {
 	@Test
 	public void instantConversion() throws Exception {
 		String rfc1123val = "Thu, 21 Apr 2016 17:11:08 +0100";
-		servletRequest.addHeader("name", rfc1123val);
+		MockServerHttpRequest request = MockServerHttpRequest.get("/").header("name", rfc1123val).build();
+		ServerWebExchange exchange = MockServerWebExchange.from(request);
 
-		ConfigurableWebBindingInitializer bindingInitializer = new ConfigurableWebBindingInitializer();
-		bindingInitializer.setConversionService(new DefaultFormattingConversionService());
-		Object result = resolver.resolveArgument(paramInstant, null, webRequest,
-				new DefaultDataBinderFactory(bindingInitializer));
+		Mono<Object> mono = this.resolver.resolveArgument(this.paramInstant, this.bindingContext, exchange);
+		Object result = mono.block();
 
 		assertTrue(result instanceof Instant);
 		assertEquals(Instant.from(DateTimeFormatter.RFC_1123_DATE_TIME.parse(rfc1123val)), result);
 	}
 
 
+	@SuppressWarnings("unused")
 	public void params(
 			@RequestHeader(name = "name", defaultValue = "bar") String param1,
 			@RequestHeader("name") String[] param2,
 			@RequestHeader(name = "name", defaultValue="#{systemProperties.systemProperty}") String param3,
-			@RequestHeader(name = "name", defaultValue="#{request.contextPath}") String param4,
-			@RequestHeader("#{systemProperties.systemProperty}") String param5,
-			@RequestHeader("${systemProperty}") String param6,
+			@RequestHeader("#{systemProperties.systemProperty}") String param4,
+			@RequestHeader("${systemProperty}") String param5,
 			@RequestHeader("name") Map<?, ?> unsupported,
 			@RequestHeader("name") Date dateParam,
-			@RequestHeader("name") Instant instantParam) {
+			@RequestHeader("name") Instant instantParam,
+			@RequestHeader Mono<String> alsoNotSupported) {
 	}
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,99 +14,55 @@
  * limitations under the License.
  */
 
-package org.springframework.web.servlet.mvc.method.annotation;
+package org.springframework.web.reactive.result.method.annotation;
 
 import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.Method;
-import java.util.List;
-import java.util.Set;
-import javax.servlet.http.HttpServletRequest;
 
 import org.springframework.context.EmbeddedValueResolverAware;
 import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Controller;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringValueResolver;
-import org.springframework.web.accept.ContentNegotiationManager;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.method.HandlerMethod;
-import org.springframework.web.servlet.handler.MatchableHandlerMapping;
-import org.springframework.web.servlet.handler.RequestMatchResult;
-import org.springframework.web.servlet.mvc.condition.AbstractRequestCondition;
-import org.springframework.web.servlet.mvc.condition.CompositeRequestCondition;
-import org.springframework.web.servlet.mvc.condition.RequestCondition;
-import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
-import org.springframework.web.servlet.mvc.method.RequestMappingInfoHandlerMapping;
+import org.springframework.web.reactive.accept.RequestedContentTypeResolver;
+import org.springframework.web.reactive.accept.RequestedContentTypeResolverBuilder;
+import org.springframework.web.reactive.result.condition.RequestCondition;
+import org.springframework.web.reactive.result.method.RequestMappingInfo;
+import org.springframework.web.reactive.result.method.RequestMappingInfoHandlerMapping;
 
 /**
- * Creates {@link RequestMappingInfo} instances from type and method-level
- * {@link RequestMapping @RequestMapping} annotations in
- * {@link Controller @Controller} classes.
+ * An extension of {@link RequestMappingInfoHandlerMapping} that creates
+ * {@link RequestMappingInfo} instances from class-level and method-level
+ * {@link RequestMapping @RequestMapping} annotations.
  *
- * @author Arjen Poutsma
  * @author Rossen Stoyanchev
- * @author Sam Brannen
- * @since 3.1
+ * @since 5.0
  */
 public class RequestMappingHandlerMapping extends RequestMappingInfoHandlerMapping
-		implements MatchableHandlerMapping, EmbeddedValueResolverAware {
+		implements EmbeddedValueResolverAware {
 
-	private boolean useSuffixPatternMatch = true;
+	private RequestedContentTypeResolver contentTypeResolver = new RequestedContentTypeResolverBuilder().build();
 
-	private boolean useRegisteredSuffixPatternMatch = false;
-
-	private boolean useTrailingSlashMatch = true;
-
-	private ContentNegotiationManager contentNegotiationManager = new ContentNegotiationManager();
-
+	@Nullable
 	private StringValueResolver embeddedValueResolver;
 
 	private RequestMappingInfo.BuilderConfiguration config = new RequestMappingInfo.BuilderConfiguration();
 
 
 	/**
-	 * Whether to use suffix pattern match (".*") when matching patterns to
-	 * requests. If enabled a method mapped to "/users" also matches to "/users.*".
-	 * <p>The default value is {@code true}.
-	 * <p>Also see {@link #setUseRegisteredSuffixPatternMatch(boolean)} for
-	 * more fine-grained control over specific suffixes to allow.
-	 */
-	public void setUseSuffixPatternMatch(boolean useSuffixPatternMatch) {
-		this.useSuffixPatternMatch = useSuffixPatternMatch;
-	}
-
-	/**
-	 * Whether suffix pattern matching should work only against path extensions
-	 * explicitly registered with the {@link ContentNegotiationManager}. This
-	 * is generally recommended to reduce ambiguity and to avoid issues such as
-	 * when a "." appears in the path for other reasons.
-	 * <p>By default this is set to "false".
-	 */
-	public void setUseRegisteredSuffixPatternMatch(boolean useRegisteredSuffixPatternMatch) {
-		this.useRegisteredSuffixPatternMatch = useRegisteredSuffixPatternMatch;
-		this.useSuffixPatternMatch = (useRegisteredSuffixPatternMatch || this.useSuffixPatternMatch);
-	}
-
-	/**
-	 * Whether to match to URLs irrespective of the presence of a trailing slash.
-	 * If enabled a method mapped to "/users" also matches to "/users/".
-	 * <p>The default value is {@code true}.
-	 */
-	public void setUseTrailingSlashMatch(boolean useTrailingSlashMatch) {
-		this.useTrailingSlashMatch = useTrailingSlashMatch;
-	}
-
-	/**
-	 * Set the {@link ContentNegotiationManager} to use to determine requested media types.
+	 * Set the {@link RequestedContentTypeResolver} to use to determine requested media types.
 	 * If not set, the default constructor is used.
 	 */
-	public void setContentNegotiationManager(ContentNegotiationManager contentNegotiationManager) {
-		Assert.notNull(contentNegotiationManager, "ContentNegotiationManager must not be null");
-		this.contentNegotiationManager = contentNegotiationManager;
+	public void setContentTypeResolver(RequestedContentTypeResolver contentTypeResolver) {
+		Assert.notNull(contentTypeResolver, "'contentTypeResolver' must not be null");
+		this.contentTypeResolver = contentTypeResolver;
 	}
 
 	@Override
@@ -117,52 +73,19 @@ public class RequestMappingHandlerMapping extends RequestMappingInfoHandlerMappi
 	@Override
 	public void afterPropertiesSet() {
 		this.config = new RequestMappingInfo.BuilderConfiguration();
-		this.config.setUrlPathHelper(getUrlPathHelper());
-		this.config.setPathMatcher(getPathMatcher());
-		this.config.setSuffixPatternMatch(this.useSuffixPatternMatch);
-		this.config.setTrailingSlashMatch(this.useTrailingSlashMatch);
-		this.config.setRegisteredSuffixPatternMatch(this.useRegisteredSuffixPatternMatch);
-		this.config.setContentNegotiationManager(getContentNegotiationManager());
+		this.config.setPatternParser(getPathPatternParser());
+		this.config.setContentTypeResolver(getContentTypeResolver());
 
 		super.afterPropertiesSet();
 	}
 
 
 	/**
-	 * Whether to use suffix pattern matching.
+	 * Return the configured {@link RequestedContentTypeResolver}.
 	 */
-	public boolean useSuffixPatternMatch() {
-		return this.useSuffixPatternMatch;
+	public RequestedContentTypeResolver getContentTypeResolver() {
+		return this.contentTypeResolver;
 	}
-
-	/**
-	 * Whether to use registered suffixes for pattern matching.
-	 */
-	public boolean useRegisteredSuffixPatternMatch() {
-		return this.useRegisteredSuffixPatternMatch;
-	}
-
-	/**
-	 * Whether to match to URLs irrespective of the presence of a trailing slash.
-	 */
-	public boolean useTrailingSlashMatch() {
-		return this.useTrailingSlashMatch;
-	}
-
-	/**
-	 * Return the configured {@link ContentNegotiationManager}.
-	 */
-	public ContentNegotiationManager getContentNegotiationManager() {
-		return this.contentNegotiationManager;
-	}
-
-	/**
-	 * Return the file extensions to use for suffix pattern matching.
-	 */
-	public List<String> getFileExtensions() {
-		return this.config.getFileExtensions();
-	}
-
 
 	/**
 	 * {@inheritDoc}
@@ -201,6 +124,7 @@ public class RequestMappingHandlerMapping extends RequestMappingInfoHandlerMappi
 	 * @see #getCustomTypeCondition(Class)
 	 * @see #getCustomMethodCondition(Method)
 	 */
+	@Nullable
 	private RequestMappingInfo createRequestMappingInfo(AnnotatedElement element) {
 		RequestMapping requestMapping = AnnotatedElementUtils.findMergedAnnotation(element, RequestMapping.class);
 		RequestCondition<?> condition = (element instanceof Class ?
@@ -213,12 +137,16 @@ public class RequestMappingHandlerMapping extends RequestMappingInfoHandlerMappi
 	 * The custom {@link RequestCondition} can be of any type so long as the
 	 * same condition type is returned from all calls to this method in order
 	 * to ensure custom request conditions can be combined and compared.
-	 * <p>Consider extending {@link AbstractRequestCondition} for custom
-	 * condition types and using {@link CompositeRequestCondition} to provide
-	 * multiple custom conditions.
+	 * <p>Consider extending
+	 * {@link org.springframework.web.reactive.result.condition.AbstractRequestCondition
+	 * AbstractRequestCondition} for custom condition types and using
+	 * {@link org.springframework.web.reactive.result.condition.CompositeRequestCondition
+	 * CompositeRequestCondition} to provide multiple custom conditions.
 	 * @param handlerType the handler type for which to create the condition
 	 * @return the condition, or {@code null}
 	 */
+	@SuppressWarnings("UnusedParameters")
+	@Nullable
 	protected RequestCondition<?> getCustomTypeCondition(Class<?> handlerType) {
 		return null;
 	}
@@ -228,12 +156,16 @@ public class RequestMappingHandlerMapping extends RequestMappingInfoHandlerMappi
 	 * The custom {@link RequestCondition} can be of any type so long as the
 	 * same condition type is returned from all calls to this method in order
 	 * to ensure custom request conditions can be combined and compared.
-	 * <p>Consider extending {@link AbstractRequestCondition} for custom
-	 * condition types and using {@link CompositeRequestCondition} to provide
-	 * multiple custom conditions.
+	 * <p>Consider extending
+	 * {@link org.springframework.web.reactive.result.condition.AbstractRequestCondition
+	 * AbstractRequestCondition} for custom condition types and using
+	 * {@link org.springframework.web.reactive.result.condition.CompositeRequestCondition
+	 * CompositeRequestCondition} to provide multiple custom conditions.
 	 * @param method the handler method for which to create the condition
 	 * @return the condition, or {@code null}
 	 */
+	@SuppressWarnings("UnusedParameters")
+	@Nullable
 	protected RequestCondition<?> getCustomMethodCondition(Method method) {
 		return null;
 	}
@@ -245,19 +177,20 @@ public class RequestMappingHandlerMapping extends RequestMappingInfoHandlerMappi
 	 * result of merging annotation attributes within an annotation hierarchy.
 	 */
 	protected RequestMappingInfo createRequestMappingInfo(
-			RequestMapping requestMapping, RequestCondition<?> customCondition) {
+			RequestMapping requestMapping, @Nullable RequestCondition<?> customCondition) {
 
-		return RequestMappingInfo
+		RequestMappingInfo.Builder builder = RequestMappingInfo
 				.paths(resolveEmbeddedValuesInPatterns(requestMapping.path()))
 				.methods(requestMapping.method())
 				.params(requestMapping.params())
 				.headers(requestMapping.headers())
 				.consumes(requestMapping.consumes())
 				.produces(requestMapping.produces())
-				.mappingName(requestMapping.name())
-				.customCondition(customCondition)
-				.options(this.config)
-				.build();
+				.mappingName(requestMapping.name());
+		if (customCondition != null) {
+			builder.customCondition(customCondition);
+		}
+		return builder.options(this.config).build();
 	}
 
 	/**
@@ -275,18 +208,6 @@ public class RequestMappingHandlerMapping extends RequestMappingInfoHandlerMappi
 			}
 			return resolvedPatterns;
 		}
-	}
-
-	@Override
-	public RequestMatchResult match(HttpServletRequest request, String pattern) {
-		RequestMappingInfo info = RequestMappingInfo.paths(pattern).options(this.config).build();
-		RequestMappingInfo matchingInfo = info.getMatchingCondition(request);
-		if (matchingInfo == null) {
-			return null;
-		}
-		Set<String> patterns = matchingInfo.getPatternsCondition().getPatterns();
-		String lookupPath = getUrlPathHelper().getLookupPathForRequest(request);
-		return new RequestMatchResult(patterns.iterator().next(), lookupPath, getPathMatcher());
 	}
 
 	@Override
@@ -312,7 +233,7 @@ public class RequestMappingHandlerMapping extends RequestMappingInfoHandlerMappi
 		return config.applyPermitDefaultValues();
 	}
 
-	private void updateCorsConfig(CorsConfiguration config, CrossOrigin annotation) {
+	private void updateCorsConfig(CorsConfiguration config, @Nullable CrossOrigin annotation) {
 		if (annotation == null) {
 			return;
 		}
@@ -347,7 +268,13 @@ public class RequestMappingHandlerMapping extends RequestMappingInfoHandlerMappi
 	}
 
 	private String resolveCorsAnnotationValue(String value) {
-		return (this.embeddedValueResolver != null ? this.embeddedValueResolver.resolveStringValue(value) : value);
+		if (this.embeddedValueResolver != null) {
+			String resolved = this.embeddedValueResolver.resolveStringValue(value);
+			return (resolved != null ? resolved : "");
+		}
+		else {
+			return value;
+		}
 	}
 
 }

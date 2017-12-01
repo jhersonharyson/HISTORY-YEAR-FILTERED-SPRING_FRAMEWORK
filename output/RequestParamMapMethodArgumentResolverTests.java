@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,108 +14,99 @@
  * limitations under the License.
  */
 
-package org.springframework.web.method.annotation;
+package org.springframework.web.reactive.result.method.annotation;
 
-import java.lang.reflect.Method;
+import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
 
-import org.junit.Before;
 import org.junit.Test;
+import reactor.core.publisher.Mono;
 
 import org.springframework.core.MethodParameter;
-import org.springframework.core.annotation.SynthesizingMethodParameter;
-import org.springframework.mock.web.test.MockHttpServletRequest;
-import org.springframework.mock.web.test.MockHttpServletResponse;
-import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.core.ReactiveAdapterRegistry;
+import org.springframework.mock.http.server.reactive.test.MockServerHttpRequest;
+import org.springframework.mock.web.test.server.MockServerWebExchange;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.context.request.NativeWebRequest;
-import org.springframework.web.context.request.ServletWebRequest;
+import org.springframework.web.method.ResolvableMethod;
+import org.springframework.web.server.ServerWebExchange;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.springframework.web.method.MvcAnnotationPredicates.requestParam;
 
 /**
- * Test fixture with {@link RequestParamMapMethodArgumentResolver}.
- *
- * @author Arjen Poutsma
+ * Unit tests for {@link RequestParamMapMethodArgumentResolver}.
  * @author Rossen Stoyanchev
  */
 public class RequestParamMapMethodArgumentResolverTests {
 
-	private RequestParamMapMethodArgumentResolver resolver;
+	private final RequestParamMapMethodArgumentResolver resolver =
+			new RequestParamMapMethodArgumentResolver(ReactiveAdapterRegistry.getSharedInstance());
 
-	private MethodParameter paramMap;
-
-	private MethodParameter paramMultiValueMap;
-
-	private MethodParameter paramNamedMap;
-
-	private MethodParameter paramMapWithoutAnnot;
-
-	private NativeWebRequest webRequest;
-
-	private MockHttpServletRequest request;
-
-
-	@Before
-	public void setUp() throws Exception {
-		resolver = new RequestParamMapMethodArgumentResolver();
-
-		Method method = getClass().getMethod("params", Map.class, MultiValueMap.class, Map.class, Map.class);
-		paramMap = new SynthesizingMethodParameter(method, 0);
-		paramMultiValueMap = new SynthesizingMethodParameter(method, 1);
-		paramNamedMap = new SynthesizingMethodParameter(method, 2);
-		paramMapWithoutAnnot = new SynthesizingMethodParameter(method, 3);
-
-		request = new MockHttpServletRequest();
-		webRequest = new ServletWebRequest(request, new MockHttpServletResponse());
-	}
+	private ResolvableMethod testMethod = ResolvableMethod.on(getClass()).named("handle").build();
 
 
 	@Test
 	public void supportsParameter() {
-		assertTrue("Map parameter not supported", resolver.supportsParameter(paramMap));
-		assertTrue("MultiValueMap parameter not supported", resolver.supportsParameter(paramMultiValueMap));
-		assertFalse("Map with name supported", resolver.supportsParameter(paramNamedMap));
-		assertFalse("non-@RequestParam map supported", resolver.supportsParameter(paramMapWithoutAnnot));
+		MethodParameter param = this.testMethod.annot(requestParam().name("")).arg(Map.class);
+		assertTrue(this.resolver.supportsParameter(param));
+
+		param = this.testMethod.annotPresent(RequestParam.class).arg(MultiValueMap.class);
+		assertTrue(this.resolver.supportsParameter(param));
+
+		param = this.testMethod.annot(requestParam().name("name")).arg(Map.class);
+		assertFalse(this.resolver.supportsParameter(param));
+
+		param = this.testMethod.annotNotPresent(RequestParam.class).arg(Map.class);
+		assertFalse(this.resolver.supportsParameter(param));
+
+		try {
+			param = this.testMethod.annot(requestParam()).arg(Mono.class, Map.class);
+			this.resolver.supportsParameter(param);
+			fail();
+		}
+		catch (IllegalStateException ex) {
+			assertTrue("Unexpected error message:\n" + ex.getMessage(),
+					ex.getMessage().startsWith(
+							"RequestParamMapMethodArgumentResolver doesn't support reactive type wrapper"));
+		}
 	}
 
 	@Test
-	public void resolveMapArgument() throws Exception {
-		String name = "foo";
-		String value = "bar";
-		request.addParameter(name, value);
-		Map<String, String> expected = Collections.singletonMap(name, value);
-
-		Object result = resolver.resolveArgument(paramMap, null, webRequest, null);
-
+	public void resolveMapArgumentWithQueryString() throws Exception {
+		MethodParameter param = this.testMethod.annot(requestParam().name("")).arg(Map.class);
+		Object result= resolve(param, MockServerWebExchange.from(MockServerHttpRequest.get("/path?foo=bar")));
 		assertTrue(result instanceof Map);
-		assertEquals("Invalid result", expected, result);
+		assertEquals(Collections.singletonMap("foo", "bar"), result);
 	}
 
 	@Test
 	public void resolveMultiValueMapArgument() throws Exception {
-		String name = "foo";
-		String value1 = "bar";
-		String value2 = "baz";
-		request.addParameter(name, new String[]{value1, value2});
-
-		MultiValueMap<String, String> expected = new LinkedMultiValueMap<>(1);
-		expected.add(name, value1);
-		expected.add(name, value2);
-
-		Object result = resolver.resolveArgument(paramMultiValueMap, null, webRequest, null);
+		MethodParameter param = this.testMethod.annotPresent(RequestParam.class).arg(MultiValueMap.class);
+		ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/path?foo=bar&foo=baz"));
+		Object result= resolve(param, exchange);
 
 		assertTrue(result instanceof MultiValueMap);
-		assertEquals("Invalid result", expected, result);
+		assertEquals(Collections.singletonMap("foo", Arrays.asList("bar", "baz")), result);
 	}
 
 
-	public void params(@RequestParam Map<?, ?> param1,
-					   @RequestParam MultiValueMap<?, ?> param2,
-					   @RequestParam("name") Map<?, ?> param3,
-					   Map<?, ?> param4) {
+	private Object resolve(MethodParameter parameter, ServerWebExchange exchange) {
+		return this.resolver.resolveArgument(parameter, null, exchange).block(Duration.ofMillis(0));
+	}
+
+
+	public void handle(
+			@RequestParam Map<?, ?> param1,
+			@RequestParam MultiValueMap<?, ?> param2,
+			@RequestParam("name") Map<?, ?> param3,
+			Map<?, ?> param4,
+			@RequestParam Mono<Map<?, ?>> paramMono) {
 	}
 
 }
