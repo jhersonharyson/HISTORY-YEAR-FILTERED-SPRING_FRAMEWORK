@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2018 the original author or authors.
+ * Copyright 2002-2019 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-package org.springframework.web.reactive.function.server;
+package org.springframework.web.servlet.function;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.security.Principal;
@@ -34,27 +35,24 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
+import javax.servlet.ServletException;
+import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpSession;
+
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpCookie;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
-import org.springframework.http.codec.HttpMessageReader;
-import org.springframework.http.codec.multipart.Part;
+import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.server.PathContainer;
-import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.lang.NonNull;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 import org.springframework.util.MultiValueMap;
-import org.springframework.web.reactive.function.BodyExtractor;
-import org.springframework.web.server.ServerWebExchange;
-import org.springframework.web.server.WebSession;
 import org.springframework.web.util.UriBuilder;
 import org.springframework.web.util.UriUtils;
 import org.springframework.web.util.pattern.PathPattern;
@@ -65,7 +63,7 @@ import org.springframework.web.util.pattern.PathPatternParser;
  * request matching operations, such as matching based on path, HTTP method, etc.
  *
  * @author Arjen Poutsma
- * @since 5.0
+ * @since 5.2
  */
 public abstract class RequestPredicates {
 
@@ -82,7 +80,6 @@ public abstract class RequestPredicates {
 		return request -> true;
 	}
 
-
 	/**
 	 * Return a {@code RequestPredicate} that matches if the request's
 	 * HTTP method is equal to the given method.
@@ -98,7 +95,6 @@ public abstract class RequestPredicates {
 	 * HTTP method is equal to one the of the given methods.
 	 * @param httpMethods the HTTP methods to match against
 	 * @return a predicate that tests against the given HTTP methods
-	 * @since 5.1
 	 */
 	public static RequestPredicate methods(HttpMethod... httpMethods) {
 		return new HttpMethodPredicate(httpMethods);
@@ -112,6 +108,9 @@ public abstract class RequestPredicates {
 	 */
 	public static RequestPredicate path(String pattern) {
 		Assert.notNull(pattern, "'pattern' must not be null");
+		if (!pattern.isEmpty() && !pattern.startsWith("/")) {
+			pattern = "/" + pattern;
+		}
 		return pathPredicates(DEFAULT_PATTERN_PARSER).apply(pattern);
 	}
 
@@ -262,28 +261,27 @@ public abstract class RequestPredicates {
 	}
 
 	/**
-	 * Return a {@code RequestPredicate} that matches if the request's query parameter of the given name
+	 * Return a {@code RequestPredicate} that matches if the request's parameter of the given name
 	 * has the given value.
-	 * @param name the name of the query parameter to test against
-	 * @param value the value of the query parameter to test against
-	 * @return a predicate that matches if the query parameter has the given value
-	 * @since 5.0.7
-	 * @see ServerRequest#queryParam(String)
+	 * @param name the name of the parameter to test against
+	 * @param value the value of the parameter to test against
+	 * @return a predicate that matches if the parameter has the given value
+	 * @see ServerRequest#param(String)
 	 */
-	public static RequestPredicate queryParam(String name, String value) {
-		return new QueryParamPredicate(name, value);
+	public static RequestPredicate param(String name, String value) {
+		return new ParamPredicate(name, value);
 	}
 
 	/**
-	 * Return a {@code RequestPredicate} that tests the request's query parameter of the given name
+	 * Return a {@code RequestPredicate} that tests the request's parameter of the given name
 	 * against the given predicate.
-	 * @param name the name of the query parameter to test against
-	 * @param predicate predicate to test against the query parameter value
-	 * @return a predicate that matches the given predicate against the query parameter of the given name
-	 * @see ServerRequest#queryParam(String)
+	 * @param name the name of the parameter to test against
+	 * @param predicate predicate to test against the parameter value
+	 * @return a predicate that matches the given predicate against the parameter of the given name
+	 * @see ServerRequest#param(String)
 	 */
-	public static RequestPredicate queryParam(String name, Predicate<String> predicate) {
-		return new QueryParamPredicate(name, predicate);
+	public static RequestPredicate param(String name, Predicate<String> predicate) {
+		return new ParamPredicate(name, predicate);
 	}
 
 
@@ -350,7 +348,7 @@ public abstract class RequestPredicates {
 		void pathExtension(String extension);
 
 		/**
-		 * Receive notification of a HTTP header predicate.
+		 * Receive notification of an HTTP header predicate.
 		 * @param name the name of the HTTP header to check
 		 * @param value the desired value of the HTTP header
 		 * @see RequestPredicates#headers(Predicate)
@@ -360,12 +358,12 @@ public abstract class RequestPredicates {
 		void header(String name, String value);
 
 		/**
-		 * Receive notification of a query parameter predicate.
-		 * @param name the name of the query parameter
+		 * Receive notification of a parameter predicate.
+		 * @param name the name of the parameter
 		 * @param value the desired value of the parameter
-		 * @see RequestPredicates#queryParam(String, String)
+		 * @see RequestPredicates#param(String, String)
 		 */
-		void queryParam(String name, String value);
+		void param(String name, String value);
 
 		/**
 		 * Receive first notification of a logical AND predicate.
@@ -429,10 +427,10 @@ public abstract class RequestPredicates {
 		void unknown(RequestPredicate predicate);
 	}
 
-
 	private static class HttpMethodPredicate implements RequestPredicate {
 
 		private final Set<HttpMethod> httpMethods;
+
 
 		public HttpMethodPredicate(HttpMethod httpMethod) {
 			Assert.notNull(httpMethod, "HttpMethod must not be null");
@@ -441,7 +439,6 @@ public abstract class RequestPredicates {
 
 		public HttpMethodPredicate(HttpMethod... httpMethods) {
 			Assert.notEmpty(httpMethods, "HttpMethods must not be empty");
-
 			this.httpMethods = EnumSet.copyOf(Arrays.asList(httpMethods));
 		}
 
@@ -503,7 +500,6 @@ public abstract class RequestPredicates {
 					pattern);
 			request.attributes().put(RouterFunctions.MATCHING_PATTERN_ATTRIBUTE, pattern);
 		}
-
 		@Override
 		public Optional<ServerRequest> nest(ServerRequest request) {
 			return Optional.ofNullable(this.pattern.matchStartOfPath(request.pathContainer()))
@@ -628,14 +624,12 @@ public abstract class RequestPredicates {
 		}
 	}
 
-
 	private static class PathExtensionPredicate implements RequestPredicate {
 
 		private final Predicate<String> extensionPredicate;
 
 		@Nullable
 		private final String extension;
-
 		public PathExtensionPredicate(Predicate<String> extensionPredicate) {
 			Assert.notNull(extensionPredicate, "Predicate must not be null");
 			this.extensionPredicate = extensionPredicate;
@@ -678,7 +672,7 @@ public abstract class RequestPredicates {
 	}
 
 
-	private static class QueryParamPredicate implements RequestPredicate {
+	private static class ParamPredicate implements RequestPredicate {
 
 		private final String name;
 
@@ -687,7 +681,7 @@ public abstract class RequestPredicates {
 		@Nullable
 		private final String value;
 
-		public QueryParamPredicate(String name, Predicate<String> valuePredicate) {
+		public ParamPredicate(String name, Predicate<String> valuePredicate) {
 			Assert.notNull(name, "Name must not be null");
 			Assert.notNull(valuePredicate, "Predicate must not be null");
 			this.name = name;
@@ -695,7 +689,7 @@ public abstract class RequestPredicates {
 			this.value = null;
 		}
 
-		public QueryParamPredicate(String name, String value) {
+		public ParamPredicate(String name, String value) {
 			Assert.notNull(name, "Name must not be null");
 			Assert.notNull(value, "Value must not be null");
 			this.name = name;
@@ -705,13 +699,13 @@ public abstract class RequestPredicates {
 
 		@Override
 		public boolean test(ServerRequest request) {
-			Optional<String> s = request.queryParam(this.name);
+			Optional<String> s = request.param(this.name);
 			return s.filter(this.valuePredicate).isPresent();
 		}
 
 		@Override
 		public void accept(Visitor visitor) {
-			visitor.queryParam(this.name,
+			visitor.param(this.name,
 					(this.value != null) ?
 							this.value :
 							this.valuePredicate.toString());
@@ -863,7 +857,6 @@ public abstract class RequestPredicates {
 			visitor.endOr();
 		}
 
-
 		@Override
 		public String toString() {
 			return String.format("(%s || %s)", this.left, this.right);
@@ -936,7 +929,7 @@ public abstract class RequestPredicates {
 		}
 
 		@Override
-		public MultiValueMap<String, HttpCookie> cookies() {
+		public MultiValueMap<String, Cookie> cookies() {
 			return this.request.cookies();
 		}
 
@@ -946,38 +939,24 @@ public abstract class RequestPredicates {
 		}
 
 		@Override
-		public List<HttpMessageReader<?>> messageReaders() {
-			return this.request.messageReaders();
+		public List<HttpMessageConverter<?>> messageConverters() {
+			return this.request.messageConverters();
 		}
 
 		@Override
-		public <T> T body(BodyExtractor<T, ? super ServerHttpRequest> extractor) {
-			return this.request.body(extractor);
+		public <T> T body(Class<T> bodyType) throws ServletException, IOException {
+			return this.request.body(bodyType);
 		}
 
 		@Override
-		public <T> T body(BodyExtractor<T, ? super ServerHttpRequest> extractor, Map<String, Object> hints) {
-			return this.request.body(extractor, hints);
+		public <T> T body(ParameterizedTypeReference<T> bodyType)
+				throws ServletException, IOException {
+			return this.request.body(bodyType);
 		}
 
 		@Override
-		public <T> Mono<T> bodyToMono(Class<? extends T> elementClass) {
-			return this.request.bodyToMono(elementClass);
-		}
-
-		@Override
-		public <T> Mono<T> bodyToMono(ParameterizedTypeReference<T> typeReference) {
-			return this.request.bodyToMono(typeReference);
-		}
-
-		@Override
-		public <T> Flux<T> bodyToFlux(Class<? extends T> elementClass) {
-			return this.request.bodyToFlux(elementClass);
-		}
-
-		@Override
-		public <T> Flux<T> bodyToFlux(ParameterizedTypeReference<T> typeReference) {
-			return this.request.bodyToFlux(typeReference);
+		public Optional<Object> attribute(String name) {
+			return this.request.attribute(name);
 		}
 
 		@Override
@@ -986,13 +965,13 @@ public abstract class RequestPredicates {
 		}
 
 		@Override
-		public Optional<String> queryParam(String name) {
-			return this.request.queryParam(name);
+		public Optional<String> param(String name) {
+			return this.request.param(name);
 		}
 
 		@Override
-		public MultiValueMap<String, String> queryParams() {
-			return this.request.queryParams();
+		public MultiValueMap<String, String> params() {
+			return this.request.params();
 		}
 
 		@Override
@@ -1000,32 +979,23 @@ public abstract class RequestPredicates {
 		public Map<String, String> pathVariables() {
 			return (Map<String, String>) this.attributes.getOrDefault(
 					RouterFunctions.URI_TEMPLATE_VARIABLES_ATTRIBUTE, Collections.emptyMap());
-
 		}
 
 		@Override
-		public Mono<WebSession> session() {
+		public HttpSession session() {
 			return this.request.session();
 		}
 
+
+
 		@Override
-		public Mono<? extends Principal> principal() {
+		public Optional<Principal> principal() {
 			return this.request.principal();
 		}
 
 		@Override
-		public Mono<MultiValueMap<String, String>> formData() {
-			return this.request.formData();
-		}
-
-		@Override
-		public Mono<MultiValueMap<String, Part>> multipartData() {
-			return this.request.multipartData();
-		}
-
-		@Override
-		public ServerWebExchange exchange() {
-			return this.request.exchange();
+		public HttpServletRequest servletRequest() {
+			return this.request.servletRequest();
 		}
 
 		@Override

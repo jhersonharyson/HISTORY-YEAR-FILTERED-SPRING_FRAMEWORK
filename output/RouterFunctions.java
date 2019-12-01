@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2018 the original author or authors.
+ * Copyright 2002-2019 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 
-package org.springframework.web.reactive.function.server;
+package org.springframework.web.servlet.function;
 
-import java.util.List;
-import java.util.Map;
+import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -26,16 +25,9 @@ import java.util.function.Supplier;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import reactor.core.publisher.Mono;
 
 import org.springframework.core.io.Resource;
-import org.springframework.http.codec.HttpMessageWriter;
-import org.springframework.http.server.reactive.HttpHandler;
 import org.springframework.util.Assert;
-import org.springframework.web.reactive.result.view.ViewResolver;
-import org.springframework.web.server.ServerWebExchange;
-import org.springframework.web.server.WebHandler;
-import org.springframework.web.server.adapter.WebHttpHandlerBuilder;
 
 /**
  * <strong>Central entry point to Spring's functional web framework.</strong>
@@ -46,45 +38,36 @@ import org.springframework.web.server.adapter.WebHttpHandlerBuilder;
  * {@linkplain #nest(RequestPredicate, RouterFunction) subrouting} on an existing routing
  * function.
  *
- * <p>Additionally, this class can {@linkplain #toHttpHandler(RouterFunction) transform} a
- * {@code RouterFunction} into an {@code HttpHandler}, which can be run in Servlet 3.1+,
- * Reactor, or Undertow.
- *
  * @author Arjen Poutsma
- * @since 5.0
+ * @since 5.2
  */
 public abstract class RouterFunctions {
 
 	private static final Log logger = LogFactory.getLog(RouterFunctions.class);
 
 	/**
-	 * Name of the {@link ServerWebExchange} attribute that contains the {@link ServerRequest}.
+	 * Name of the request attribute that contains the {@link ServerRequest}.
 	 */
 	public static final String REQUEST_ATTRIBUTE = RouterFunctions.class.getName() + ".request";
 
 	/**
-	 * Name of the {@link ServerWebExchange} attribute that contains the URI
+	 * Name of the request attribute that contains the URI
 	 * templates map, mapping variable names to values.
 	 */
 	public static final String URI_TEMPLATE_VARIABLES_ATTRIBUTE =
 			RouterFunctions.class.getName() + ".uriTemplateVariables";
 
 	/**
-	 * Name of the {@link ServerWebExchange#getAttributes() attribute} that
-	 * contains the matching pattern, as a {@link org.springframework.web.util.pattern.PathPattern}.
+	 * Name of the request attribute that contains the matching pattern, as a
+	 * {@link org.springframework.web.util.pattern.PathPattern}.
 	 */
 	public static final String MATCHING_PATTERN_ATTRIBUTE =
 			RouterFunctions.class.getName() + ".matchingPattern";
 
 
-	private static final HandlerFunction<ServerResponse> NOT_FOUND_HANDLER =
-			request -> ServerResponse.notFound().build();
-
-
 	/**
 	 * Offers a discoverable way to create router functions through a builder-style interface.
 	 * @return a router function builder
-	 * @since 5.1
 	 */
 	public static Builder route() {
 		return new RouterFunctionBuilder();
@@ -160,17 +143,17 @@ public abstract class RouterFunctions {
 	 * The returned function can be {@linkplain Function#andThen(Function) composed} on, for
 	 * instance to return a default resource when the lookup function does not match:
 	 * <pre class="code">
-	 * Mono&lt;Resource&gt; defaultResource = Mono.just(new ClassPathResource("index.html"));
-	 * Function&lt;ServerRequest, Mono&lt;Resource&gt;&gt; lookupFunction =
+	 * Optional&lt;Resource&gt; defaultResource = Optional.of(new ClassPathResource("index.html"));
+	 * Function&lt;ServerRequest, Optional&lt;Resource&gt;&gt; lookupFunction =
 	 *   RouterFunctions.resourceLookupFunction("/resources/**", new FileSystemResource("public-resources/"))
-	 *     .andThen(resourceMono -&gt; resourceMono.switchIfEmpty(defaultResource));
+	 *     .andThen(resource -&gt; resource.or(() -&gt; defaultResource));
 	 * RouterFunction&lt;ServerResponse&gt; resources = RouterFunctions.resources(lookupFunction);
      * </pre>
 	 * @param pattern the pattern to match
 	 * @param location the location directory relative to which resources should be resolved
 	 * @return the default resource lookup function for the given parameters.
 	 */
-	public static Function<ServerRequest, Mono<Resource>> resourceLookupFunction(String pattern, Resource location) {
+	public static Function<ServerRequest, Optional<Resource>> resourceLookupFunction(String pattern, Resource location) {
 		return new PathResourceLookupFunction(pattern, location);
 	}
 
@@ -181,119 +164,14 @@ public abstract class RouterFunctions {
 	 * @param lookupFunction the function to provide a {@link Resource} given the {@link ServerRequest}
 	 * @return a router function that routes to resources
 	 */
-	public static RouterFunction<ServerResponse> resources(Function<ServerRequest, Mono<Resource>> lookupFunction) {
+	public static RouterFunction<ServerResponse> resources(Function<ServerRequest, Optional<Resource>> lookupFunction) {
 		return new ResourcesRouterFunction(lookupFunction);
-	}
-
-	/**
-	 * Convert the given {@linkplain RouterFunction router function} into a {@link HttpHandler}.
-	 * This conversion uses {@linkplain HandlerStrategies#builder() default strategies}.
-	 * <p>The returned handler can be adapted to run in
-	 * <ul>
-	 * <li>Servlet 3.1+ using the
-	 * {@link org.springframework.http.server.reactive.ServletHttpHandlerAdapter},</li>
-	 * <li>Reactor using the
-	 * {@link org.springframework.http.server.reactive.ReactorHttpHandlerAdapter},</li>
-	 * <li>Undertow using the
-	 * {@link org.springframework.http.server.reactive.UndertowHttpHandlerAdapter}.</li>
-	 * </ul>
-	 * <p>Note that {@code HttpWebHandlerAdapter} also implements {@link WebHandler}, allowing
-	 * for additional filter and exception handler registration through
-	 * {@link WebHttpHandlerBuilder}.
-	 * @param routerFunction the router function to convert
-	 * @return an http handler that handles HTTP request using the given router function
-	 */
-	public static HttpHandler toHttpHandler(RouterFunction<?> routerFunction) {
-		return toHttpHandler(routerFunction, HandlerStrategies.withDefaults());
-	}
-
-	/**
-	 * Convert the given {@linkplain RouterFunction router function} into a {@link HttpHandler},
-	 * using the given strategies.
-	 * <p>The returned {@code HttpHandler} can be adapted to run in
-	 * <ul>
-	 * <li>Servlet 3.1+ using the
-	 * {@link org.springframework.http.server.reactive.ServletHttpHandlerAdapter},</li>
-	 * <li>Reactor using the
-	 * {@link org.springframework.http.server.reactive.ReactorHttpHandlerAdapter},</li>
-	 * <li>Undertow using the
-	 * {@link org.springframework.http.server.reactive.UndertowHttpHandlerAdapter}.</li>
-	 * </ul>
-	 * @param routerFunction the router function to convert
-	 * @param strategies the strategies to use
-	 * @return an http handler that handles HTTP request using the given router function
-	 */
-	public static HttpHandler toHttpHandler(RouterFunction<?> routerFunction, HandlerStrategies strategies) {
-		WebHandler webHandler = toWebHandler(routerFunction, strategies);
-		return WebHttpHandlerBuilder.webHandler(webHandler)
-				.filters(filters -> filters.addAll(strategies.webFilters()))
-				.exceptionHandlers(handlers -> handlers.addAll(strategies.exceptionHandlers()))
-				.localeContextResolver(strategies.localeContextResolver())
-				.build();
-	}
-
-	/**
-	 * Convert the given {@linkplain RouterFunction router function} into a {@link WebHandler}.
-	 * This conversion uses {@linkplain HandlerStrategies#builder() default strategies}.
-	 * @param routerFunction the router function to convert
-	 * @return a web handler that handles web request using the given router function
-	 */
-	public static WebHandler toWebHandler(RouterFunction<?> routerFunction) {
-		return toWebHandler(routerFunction, HandlerStrategies.withDefaults());
-	}
-
-	/**
-	 * Convert the given {@linkplain RouterFunction router function} into a {@link WebHandler},
-	 * using the given strategies.
-	 * @param routerFunction the router function to convert
-	 * @param strategies the strategies to use
-	 * @return a web handler that handles web request using the given router function
-	 */
-	public static WebHandler toWebHandler(RouterFunction<?> routerFunction, HandlerStrategies strategies) {
-		Assert.notNull(routerFunction, "RouterFunction must not be null");
-		Assert.notNull(strategies, "HandlerStrategies must not be null");
-
-		return exchange -> {
-			ServerRequest request = new DefaultServerRequest(exchange, strategies.messageReaders());
-			addAttributes(exchange, request);
-			return routerFunction.route(request)
-					.defaultIfEmpty(notFound())
-					.flatMap(handlerFunction -> wrapException(() -> handlerFunction.handle(request)))
-					.flatMap(response -> wrapException(() -> response.writeTo(exchange,
-							new HandlerStrategiesResponseContext(strategies))));
-		};
-	}
-
-
-	private static <T> Mono<T> wrapException(Supplier<Mono<T>> supplier) {
-		try {
-			return supplier.get();
-		}
-		catch (Throwable ex) {
-			return Mono.error(ex);
-		}
-	}
-
-	private static void addAttributes(ServerWebExchange exchange, ServerRequest request) {
-		Map<String, Object> attributes = exchange.getAttributes();
-		attributes.put(REQUEST_ATTRIBUTE, request);
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T extends ServerResponse> HandlerFunction<T> notFound() {
-		return (HandlerFunction<T>) NOT_FOUND_HANDLER;
-	}
-
-	@SuppressWarnings("unchecked")
-	static <T extends ServerResponse> HandlerFunction<T> cast(HandlerFunction<?> handlerFunction) {
-		return (HandlerFunction<T>) handlerFunction;
 	}
 
 
 	/**
 	 * Represents a discoverable builder for router functions.
 	 * Obtained via {@link RouterFunctions#route()}.
-	 * @since 5.1
 	 */
 	public interface Builder {
 
@@ -467,6 +345,17 @@ public abstract class RouterFunctions {
 		Builder OPTIONS(String pattern, HandlerFunction<ServerResponse> handlerFunction);
 
 		/**
+		 * Adds a route to the given handler function that handles all requests that match the
+		 * given predicate.
+		 *
+		 * @param predicate the request predicate to match
+		 * @param handlerFunction the handler function to handle all requests that match the predicate
+		 * @return this builder
+		 * @see RequestPredicates
+		 */
+		Builder route(RequestPredicate predicate, HandlerFunction<ServerResponse> handlerFunction);
+
+		/**
 		 * Adds a route to the given handler function that handles all HTTP {@code OPTIONS} requests
 		 * that match the given pattern and predicate.
 		 * @param pattern the pattern to match to
@@ -486,7 +375,7 @@ public abstract class RouterFunctions {
 		 * {@code OrderController.routerFunction()}.
 		 * to the {@code changeUser} method in {@code userController}:
 		 * <pre class="code">
-		 * RouterFunctionlt;ServerResponsegt; route =
+		 * RouterFunction&lt;ServerResponse&gt; route =
 		 *   RouterFunctions.route()
 		 *     .GET("/users", userController::listUsers)
 		 *     .add(orderController.routerFunction());
@@ -518,7 +407,7 @@ public abstract class RouterFunctions {
 		 * @param lookupFunction the function to provide a {@link Resource} given the {@link ServerRequest}
 		 * @return this builder
 		 */
-		Builder resources(Function<ServerRequest, Mono<Resource>> lookupFunction);
+		Builder resources(Function<ServerRequest, Optional<Resource>> lookupFunction);
 
 		/**
 		 * Route to the supplied router function if the given request predicate applies. This method
@@ -697,8 +586,8 @@ public abstract class RouterFunctions {
 		 * @param responseProvider a function that creates a response
 		 * @return this builder
 		 */
-		Builder onError(Predicate<? super Throwable> predicate,
-				BiFunction<? super  Throwable, ServerRequest, Mono<ServerResponse>> responseProvider);
+		Builder onError(Predicate<Throwable> predicate,
+				BiFunction<Throwable, ServerRequest, ServerResponse> responseProvider);
 
 		/**
 		 * Filters all exceptions of the given type by applying the given response provider
@@ -717,8 +606,8 @@ public abstract class RouterFunctions {
 		 * @param responseProvider a function that creates a response
 		 * @return this builder
 		 */
-		<T extends Throwable> Builder onError(Class<T> exceptionType,
-				BiFunction<? super T, ServerRequest, Mono<ServerResponse>> responseProvider);
+		Builder onError(Class<? extends Throwable> exceptionType,
+				BiFunction<Throwable, ServerRequest, ServerResponse> responseProvider);
 
 		/**
 		 * Builds the {@code RouterFunction}. All created routes are
@@ -728,8 +617,6 @@ public abstract class RouterFunctions {
 		 */
 		RouterFunction<ServerResponse> build();
 	}
-
-
 	/**
 	 * Receives notifications from the logical structure of router functions.
 	 */
@@ -762,7 +649,7 @@ public abstract class RouterFunctions {
 		 * @param lookupFunction the lookup function for the resources
 		 * @see RouterFunctions#resources(Function)
 		 */
-		void resources(Function<ServerRequest, Mono<Resource>> lookupFunction);
+		void resources(Function<ServerRequest, Optional<Resource>> lookupFunction);
 
 		/**
 		 * Receive notification of an unknown router function. This method is called for router
@@ -783,11 +670,10 @@ public abstract class RouterFunctions {
 		}
 	}
 
-
 	/**
 	 * A composed routing function that first invokes one function, and then invokes the
 	 * another function (of the same response type {@code T}) if this route had
-	 * {@linkplain Mono#empty() no result}.
+	 * {@linkplain Optional#empty() no result}.
 	 * @param <T> the server response type
 	 */
 	static final class SameComposedRouterFunction<T extends ServerResponse> extends AbstractRouterFunction<T> {
@@ -802,9 +688,14 @@ public abstract class RouterFunctions {
 		}
 
 		@Override
-		public Mono<HandlerFunction<T>> route(ServerRequest request) {
-			return this.first.route(request)
-					.switchIfEmpty(Mono.defer(() -> this.second.route(request)));
+		public Optional<HandlerFunction<T>> route(ServerRequest request) {
+			Optional<HandlerFunction<T>> firstRoute = this.first.route(request);
+			if (firstRoute.isPresent()) {
+				return firstRoute;
+			}
+			else {
+				return this.second.route(request);
+			}
 		}
 
 		@Override
@@ -814,11 +705,10 @@ public abstract class RouterFunctions {
 		}
 	}
 
-
 	/**
 	 * A composed routing function that first invokes one function, and then invokes
 	 * another function (of a different response type) if this route had
-	 * {@linkplain Mono#empty() no result}.
+	 * {@linkplain Optional#empty() no result}.
 	 */
 	static final class DifferentComposedRouterFunction extends AbstractRouterFunction<ServerResponse> {
 
@@ -832,10 +722,16 @@ public abstract class RouterFunctions {
 		}
 
 		@Override
-		public Mono<HandlerFunction<ServerResponse>> route(ServerRequest request) {
-			return this.first.route(request)
-					.map(RouterFunctions::cast)
-					.switchIfEmpty(Mono.defer(() -> this.second.route(request).map(RouterFunctions::cast)));
+		@SuppressWarnings("unchecked")
+		public Optional<HandlerFunction<ServerResponse>> route(ServerRequest request) {
+			Optional<? extends HandlerFunction<?>> firstRoute = this.first.route(request);
+			if (firstRoute.isPresent()) {
+				return (Optional<HandlerFunction<ServerResponse>>) firstRoute;
+			}
+			else {
+				Optional<? extends HandlerFunction<?>> secondRoute = this.second.route(request);
+				return (Optional<HandlerFunction<ServerResponse>>) secondRoute;
+			}
 		}
 
 		@Override
@@ -867,7 +763,7 @@ public abstract class RouterFunctions {
 		}
 
 		@Override
-		public Mono<HandlerFunction<S>> route(ServerRequest request) {
+		public Optional<HandlerFunction<S>> route(ServerRequest request) {
 			return this.routerFunction.route(request).map(this.filterFunction::apply);
 		}
 
@@ -882,8 +778,8 @@ public abstract class RouterFunctions {
 		}
 	}
 
-
-	private static final class DefaultRouterFunction<T extends ServerResponse> extends AbstractRouterFunction<T> {
+	private static final class DefaultRouterFunction<T extends ServerResponse>
+			extends AbstractRouterFunction<T> {
 
 		private final RequestPredicate predicate;
 
@@ -897,16 +793,15 @@ public abstract class RouterFunctions {
 		}
 
 		@Override
-		public Mono<HandlerFunction<T>> route(ServerRequest request) {
+		public Optional<HandlerFunction<T>> route(ServerRequest request) {
 			if (this.predicate.test(request)) {
 				if (logger.isTraceEnabled()) {
-					String logPrefix = request.exchange().getLogPrefix();
-					logger.trace(logPrefix + String.format("Matched %s", this.predicate));
+					logger.trace(String.format("Predicate \"%s\" matches against \"%s\"", this.predicate, request));
 				}
-				return Mono.just(this.handlerFunction);
+				return Optional.of(this.handlerFunction);
 			}
 			else {
-				return Mono.empty();
+				return Optional.empty();
 			}
 		}
 
@@ -914,10 +809,11 @@ public abstract class RouterFunctions {
 		public void accept(Visitor visitor) {
 			visitor.route(this.predicate, this.handlerFunction);
 		}
+
 	}
 
-
-	private static final class DefaultNestedRouterFunction<T extends ServerResponse> extends AbstractRouterFunction<T> {
+	private static final class DefaultNestedRouterFunction<T extends ServerResponse>
+			extends AbstractRouterFunction<T> {
 
 		private final RequestPredicate predicate;
 
@@ -931,23 +827,25 @@ public abstract class RouterFunctions {
 		}
 
 		@Override
-		public Mono<HandlerFunction<T>> route(ServerRequest serverRequest) {
+		public Optional<HandlerFunction<T>> route(ServerRequest serverRequest) {
 			return this.predicate.nest(serverRequest)
 					.map(nestedRequest -> {
 								if (logger.isTraceEnabled()) {
-									String logPrefix = serverRequest.exchange().getLogPrefix();
-									logger.trace(logPrefix + String.format("Matched nested %s", this.predicate));
+									logger.trace(
+											String.format(
+													"Nested predicate \"%s\" matches against \"%s\"",
+													this.predicate, serverRequest));
 								}
-								return this.routerFunction.route(nestedRequest)
-										.doOnNext(match -> {
-											if (nestedRequest != serverRequest) {
-												serverRequest.attributes().clear();
-												serverRequest.attributes()
-														.putAll(nestedRequest.attributes());
-											}
-										});
+								Optional<HandlerFunction<T>> result =
+										this.routerFunction.route(nestedRequest);
+								if (result.isPresent() && nestedRequest != serverRequest) {
+									serverRequest.attributes().clear();
+									serverRequest.attributes().putAll(nestedRequest.attributes());
+								}
+								return result;
 							}
-					).orElseGet(Mono::empty);
+					)
+					.orElseGet(Optional::empty);
 		}
 
 
@@ -957,20 +855,20 @@ public abstract class RouterFunctions {
 			this.routerFunction.accept(visitor);
 			visitor.endNested(this.predicate);
 		}
-	}
 
+	}
 
 	private static class ResourcesRouterFunction extends  AbstractRouterFunction<ServerResponse> {
 
-		private final Function<ServerRequest, Mono<Resource>> lookupFunction;
+		private final Function<ServerRequest, Optional<Resource>> lookupFunction;
 
-		public ResourcesRouterFunction(Function<ServerRequest, Mono<Resource>> lookupFunction) {
+		public ResourcesRouterFunction(Function<ServerRequest, Optional<Resource>> lookupFunction) {
 			Assert.notNull(lookupFunction, "Function must not be null");
 			this.lookupFunction = lookupFunction;
 		}
 
 		@Override
-		public Mono<HandlerFunction<ServerResponse>> route(ServerRequest request) {
+		public Optional<HandlerFunction<ServerResponse>> route(ServerRequest request) {
 			return this.lookupFunction.apply(request).map(ResourceHandlerFunction::new);
 		}
 
@@ -980,24 +878,5 @@ public abstract class RouterFunctions {
 		}
 	}
 
-
-	private static class HandlerStrategiesResponseContext implements ServerResponse.Context {
-
-		private final HandlerStrategies strategies;
-
-		public HandlerStrategiesResponseContext(HandlerStrategies strategies) {
-			this.strategies = strategies;
-		}
-
-		@Override
-		public List<HttpMessageWriter<?>> messageWriters() {
-			return this.strategies.messageWriters();
-		}
-
-		@Override
-		public List<ViewResolver> viewResolvers() {
-			return this.strategies.viewResolvers();
-		}
-	}
 
 }

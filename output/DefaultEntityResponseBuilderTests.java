@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2018 the original author or authors.
+ * Copyright 2002-2019 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-package org.springframework.web.reactive.function.server;
+package org.springframework.web.servlet.function;
 
+import java.io.IOException;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
@@ -24,246 +25,199 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 
-import org.junit.Test;
-import org.reactivestreams.Publisher;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.test.StepVerifier;
+import javax.servlet.ServletException;
+import javax.servlet.http.Cookie;
+
+import org.junit.jupiter.api.Test;
 
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.core.codec.CharSequenceEncoder;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.http.ResponseCookie;
-import org.springframework.http.codec.EncoderHttpMessageWriter;
-import org.springframework.http.codec.HttpMessageWriter;
-import org.springframework.mock.http.server.reactive.test.MockServerHttpRequest;
-import org.springframework.mock.http.server.reactive.test.MockServerHttpResponse;
-import org.springframework.mock.web.test.server.MockServerWebExchange;
+import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.mock.web.test.MockHttpServletRequest;
+import org.springframework.mock.web.test.MockHttpServletResponse;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
-import org.springframework.web.reactive.result.view.ViewResolver;
+import org.springframework.web.servlet.ModelAndView;
 
-import static org.junit.Assert.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Arjen Poutsma
  */
 public class DefaultEntityResponseBuilderTests {
 
+	static final ServerResponse.Context EMPTY_CONTEXT = new ServerResponse.Context() {
+		@Override
+		public List<HttpMessageConverter<?>> messageConverters() {
+			return Collections.emptyList();
+		}
+
+	};
+
 	@Test
 	public void fromObject() {
 		String body = "foo";
-		EntityResponse<String> response = EntityResponse.fromObject(body).build().block();
-		assertSame(body, response.entity());
+		EntityResponse<String> response = EntityResponse.fromObject(body).build();
+		assertThat(response.entity()).isSameAs(body);
 	}
 
 	@Test
-	public void fromPublisherClass() {
-		Flux<String> body = Flux.just("foo", "bar");
-		EntityResponse<Flux<String>> response = EntityResponse.fromPublisher(body, String.class).build().block();
-		assertSame(body, response.entity());
-	}
+	public void fromObjectTypeReference() {
+		String body = "foo";
+		EntityResponse<String> response = EntityResponse.fromObject(body,
+				new ParameterizedTypeReference<String>() {})
+				.build();
 
-	@Test
-	public void fromPublisher() {
-		Flux<String> body = Flux.just("foo", "bar");
-		ParameterizedTypeReference<String> typeReference = new ParameterizedTypeReference<String>() {};
-		EntityResponse<Flux<String>> response = EntityResponse.fromPublisher(body, typeReference).build().block();
-		assertSame(body, response.entity());
+		assertThat(response.entity()).isSameAs(body);
 	}
 
 	@Test
 	public void status() {
 		String body = "foo";
-		Mono<EntityResponse<String>> result = EntityResponse.fromObject(body).status(HttpStatus.CREATED).build();
-		StepVerifier.create(result)
-				.expectNextMatches(response -> HttpStatus.CREATED.equals(response.statusCode()))
-				.expectComplete()
-				.verify();
+		EntityResponse<String> result =
+				EntityResponse.fromObject(body).status(HttpStatus.CREATED).build();
+
+		assertThat(result.statusCode()).isEqualTo(HttpStatus.CREATED);
+		assertThat(result.rawStatusCode()).isEqualTo(201);
 	}
 
 	@Test
 	public void allow() {
 		String body = "foo";
-		Mono<EntityResponse<String>> result = EntityResponse.fromObject(body).allow(HttpMethod.GET).build();
+		EntityResponse<String> result =
+				EntityResponse.fromObject(body).allow(HttpMethod.GET).build();
 		Set<HttpMethod> expected = EnumSet.of(HttpMethod.GET);
-		StepVerifier.create(result)
-				.expectNextMatches(response -> expected.equals(response.headers().getAllow()))
-				.expectComplete()
-				.verify();
+		assertThat(result.headers().getAllow()).isEqualTo(expected);
 	}
 
 	@Test
 	public void contentLength() {
 		String body = "foo";
-		Mono<EntityResponse<String>> result = EntityResponse.fromObject(body).contentLength(42).build();
-		StepVerifier.create(result)
-				.expectNextMatches(response -> Long.valueOf(42).equals(response.headers().getContentLength()))
-				.expectComplete()
-				.verify();
+		EntityResponse<String> result = EntityResponse.fromObject(body).contentLength(42).build();
+		assertThat(result.headers().getContentLength()).isEqualTo(42);
 	}
 
 	@Test
 	public void contentType() {
 		String body = "foo";
-		Mono<EntityResponse<String>>
-				result = EntityResponse.fromObject(body).contentType(MediaType.APPLICATION_JSON).build();
-		StepVerifier.create(result)
-				.expectNextMatches(response -> MediaType.APPLICATION_JSON.equals(response.headers().getContentType()))
-				.expectComplete()
-				.verify();
+		EntityResponse<String>
+				result =
+				EntityResponse.fromObject(body).contentType(MediaType.APPLICATION_JSON).build();
+
+		assertThat(result.headers().getContentType()).isEqualTo(MediaType.APPLICATION_JSON);
 	}
 
 	@Test
 	public void etag() {
 		String body = "foo";
-		Mono<EntityResponse<String>> result = EntityResponse.fromObject(body).eTag("foo").build();
-		StepVerifier.create(result)
-				.expectNextMatches(response -> "\"foo\"".equals(response.headers().getETag()))
-				.expectComplete()
-				.verify();
+		EntityResponse<String> result = EntityResponse.fromObject(body).eTag("foo").build();
+
+		assertThat(result.headers().getETag()).isEqualTo("\"foo\"");
 	}
 
 	@Test
 	public void lastModified() {
 		ZonedDateTime now = ZonedDateTime.now();
 		String body = "foo";
-		Mono<EntityResponse<String>> result = EntityResponse.fromObject(body).lastModified(now).build();
-		Long expected = now.toInstant().toEpochMilli() / 1000;
-		StepVerifier.create(result)
-				.expectNextMatches(response -> expected.equals(response.headers().getLastModified() / 1000))
-				.expectComplete()
-				.verify();
+		EntityResponse<String> result = EntityResponse.fromObject(body).lastModified(now).build();
+		long expected = now.toInstant().toEpochMilli() / 1000;
+		assertThat(result.headers().getLastModified() / 1000).isEqualTo(expected);
 	}
 
 	@Test
 	public void cacheControlTag() {
 		String body = "foo";
-		Mono<EntityResponse<String>>
-				result = EntityResponse.fromObject(body).cacheControl(CacheControl.noCache()).build();
-		StepVerifier.create(result)
-				.expectNextMatches(response -> "no-cache".equals(response.headers().getCacheControl()))
-				.expectComplete()
-				.verify();
+		EntityResponse<String> result =
+				EntityResponse.fromObject(body).cacheControl(CacheControl.noCache()).build();
+		assertThat(result.headers().getCacheControl()).isEqualTo("no-cache");
 	}
 
 	@Test
 	public void varyBy() {
 		String body = "foo";
-		Mono<EntityResponse<String>> result = EntityResponse.fromObject(body).varyBy("foo").build();
+		EntityResponse<String> result = EntityResponse.fromObject(body).varyBy("foo").build();
 		List<String> expected = Collections.singletonList("foo");
-		StepVerifier.create(result)
-				.expectNextMatches(response -> expected.equals(response.headers().getVary()))
-				.expectComplete()
-				.verify();
+		assertThat(result.headers().getVary()).isEqualTo(expected);
+	}
+
+	@Test
+	public void header() {
+		String body = "foo";
+		EntityResponse<String> result = EntityResponse.fromObject(body).header("foo", "bar").build();
+		assertThat(result.headers().getFirst("foo")).isEqualTo("bar");
 	}
 
 	@Test
 	public void headers() {
 		String body = "foo";
 		HttpHeaders headers = new HttpHeaders();
-		Mono<EntityResponse<String>> result = EntityResponse.fromObject(body).headers(headers).build();
-		StepVerifier.create(result)
-				.expectNextMatches(response -> headers.equals(response.headers()))
-				.expectComplete()
-				.verify();
+		headers.set("foo", "bar");
+		EntityResponse<String> result = EntityResponse.fromObject(body)
+				.headers(h -> h.addAll(headers))
+				.build();
+		assertThat(result.headers()).isEqualTo(headers);
+	}
+
+	@Test
+	public void cookie() {
+		Cookie cookie = new Cookie("name", "value");
+		EntityResponse<String> result =
+				EntityResponse.fromObject("foo").cookie(cookie)
+						.build();
+		assertThat(result.cookies().get("name").contains(cookie)).isTrue();
 	}
 
 	@Test
 	public void cookies() {
-		MultiValueMap<String, ResponseCookie> newCookies = new LinkedMultiValueMap<>();
-		newCookies.add("name", ResponseCookie.from("name", "value").build());
-		Mono<EntityResponse<String>> result =
-				EntityResponse.fromObject("foo").cookies(cookies -> cookies.addAll(newCookies)).build();
-		StepVerifier.create(result)
-				.expectNextMatches(response -> newCookies.equals(response.cookies()))
-				.expectComplete()
-				.verify();
+		MultiValueMap<String, Cookie> newCookies = new LinkedMultiValueMap<>();
+		newCookies.add("name", new Cookie("name", "value"));
+		EntityResponse<String> result =
+				EntityResponse.fromObject("foo").cookies(cookies -> cookies.addAll(newCookies))
+						.build();
+		assertThat(result.cookies()).isEqualTo(newCookies);
 	}
 
 	@Test
-	public void bodyInserter() {
-		String body = "foo";
-		Publisher<String> publisher = Mono.just(body);
-
-		Mono<EntityResponse<Publisher<String>>> result = EntityResponse.fromPublisher(publisher, String.class).build();
-
-		MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("http://localhost"));
-
-		ServerResponse.Context context = new ServerResponse.Context() {
-			@Override
-			public List<HttpMessageWriter<?>> messageWriters() {
-				return Collections.singletonList(new EncoderHttpMessageWriter<>(CharSequenceEncoder.allMimeTypes()));
-			}
-
-			@Override
-			public List<ViewResolver> viewResolvers() {
-				return Collections.emptyList();
-			}
-		};
-		StepVerifier.create(result)
-				.consumeNextWith(response -> {
-					StepVerifier.create(response.entity())
-							.expectNext(body)
-							.expectComplete()
-							.verify();
-					response.writeTo(exchange, context);
-				})
-				.expectComplete()
-				.verify();
-
-		assertNotNull(exchange.getResponse().getBody());
-	}
-
-	@Test
-	public void notModifiedEtag() {
+	public void notModifiedEtag() throws Exception {
 		String etag = "\"foo\"";
-		EntityResponse<String> responseMono = EntityResponse.fromObject("bar")
+		EntityResponse<String> entityResponse = EntityResponse.fromObject("bar")
 				.eTag(etag)
-				.build()
-				.block();
-
-		MockServerHttpRequest request = MockServerHttpRequest.get("http://example.com")
-				.header(HttpHeaders.IF_NONE_MATCH, etag)
 				.build();
-		MockServerWebExchange exchange = MockServerWebExchange.from(request);
 
-		responseMono.writeTo(exchange, DefaultServerResponseBuilderTests.EMPTY_CONTEXT);
+		MockHttpServletRequest mockRequest = new MockHttpServletRequest("GET", "https://example.com");
+		mockRequest.addHeader(HttpHeaders.IF_NONE_MATCH, etag);
 
-		MockServerHttpResponse response = exchange.getResponse();
-		assertEquals(HttpStatus.NOT_MODIFIED, response.getStatusCode());
-		StepVerifier.create(response.getBody())
-				.expectError(IllegalStateException.class)
-				.verify();
+		MockHttpServletResponse mockResponse = new MockHttpServletResponse();
+
+		ModelAndView mav = entityResponse.writeTo(mockRequest, mockResponse, EMPTY_CONTEXT);
+		assertThat(mav).isNull();
+
+		assertThat(mockResponse.getStatus()).isEqualTo(HttpStatus.NOT_MODIFIED.value());
 	}
 
+
 	@Test
-	public void notModifiedLastModified() {
+	public void notModifiedLastModified() throws ServletException, IOException {
 		ZonedDateTime now = ZonedDateTime.now();
 		ZonedDateTime oneMinuteBeforeNow = now.minus(1, ChronoUnit.MINUTES);
 
-		EntityResponse<String> responseMono = EntityResponse.fromObject("bar")
+		EntityResponse<String> entityResponse = EntityResponse.fromObject("bar")
 				.lastModified(oneMinuteBeforeNow)
-				.build()
-				.block();
-
-		MockServerHttpRequest request = MockServerHttpRequest.get("http://example.com")
-				.header(HttpHeaders.IF_MODIFIED_SINCE,
-						DateTimeFormatter.RFC_1123_DATE_TIME.format(now))
 				.build();
-		MockServerWebExchange exchange = MockServerWebExchange.from(request);
 
-		responseMono.writeTo(exchange, DefaultServerResponseBuilderTests.EMPTY_CONTEXT);
+		MockHttpServletRequest mockRequest = new MockHttpServletRequest("GET", "https://example.com");
+		mockRequest.addHeader(HttpHeaders.IF_MODIFIED_SINCE, DateTimeFormatter.RFC_1123_DATE_TIME.format(now));
 
-		MockServerHttpResponse response = exchange.getResponse();
-		assertEquals(HttpStatus.NOT_MODIFIED, response.getStatusCode());
-		StepVerifier.create(response.getBody())
-				.expectError(IllegalStateException.class)
-				.verify();
+		MockHttpServletResponse mockResponse = new MockHttpServletResponse();
+
+		ModelAndView mav = entityResponse.writeTo(mockRequest, mockResponse, EMPTY_CONTEXT);
+		assertThat(mav).isNull();
+
+		assertThat(mockResponse.getStatus()).isEqualTo(HttpStatus.NOT_MODIFIED.value());
 	}
 
 }

@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2018 the original author or authors.
+ * Copyright 2002-2019 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,24 +14,26 @@
  * limitations under the License.
  */
 
-package org.springframework.web.reactive.function.server;
+package org.springframework.web.servlet.function;
 
-import java.net.URI;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.junit.Test;
-import reactor.core.publisher.Mono;
-import reactor.test.StepVerifier;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.test.MockHttpServletRequest;
 
-import static org.junit.Assert.*;
+import static java.util.Collections.emptyList;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.web.servlet.function.RequestPredicates.HEAD;
 
 /**
+ * Unit tests for {@link RouterFunctionBuilder}.
+ *
  * @author Arjen Poutsma
  */
 public class RouterFunctionBuilderTests {
@@ -40,94 +42,93 @@ public class RouterFunctionBuilderTests {
 	public void route() {
 		RouterFunction<ServerResponse> route = RouterFunctions.route()
 				.GET("/foo", request -> ServerResponse.ok().build())
-				.POST("/", RequestPredicates.contentType(MediaType.TEXT_PLAIN), request -> ServerResponse.noContent().build())
-				.build();
-		System.out.println(route);
-
-		MockServerRequest fooRequest = MockServerRequest.builder().
-				method(HttpMethod.GET).
-				uri(URI.create("http://localhost/foo"))
+				.POST("/", RequestPredicates.contentType(MediaType.TEXT_PLAIN),
+						request -> ServerResponse.noContent().build())
+				.route(HEAD("/foo"), request -> ServerResponse.accepted().build())
 				.build();
 
-		Mono<Integer> responseMono = route.route(fooRequest)
-				.flatMap(handlerFunction -> handlerFunction.handle(fooRequest))
+		MockHttpServletRequest servletRequest = new MockHttpServletRequest("GET", "/foo");
+		ServerRequest getFooRequest = new DefaultServerRequest(servletRequest, emptyList());
+
+		Optional<Integer> responseStatus = route.route(getFooRequest)
+				.map(handlerFunction -> handle(handlerFunction, getFooRequest))
+				.map(ServerResponse::statusCode)
+				.map(HttpStatus::value);
+		assertThat(responseStatus.get().intValue()).isEqualTo(200);
+
+		servletRequest = new MockHttpServletRequest("HEAD", "/foo");
+		ServerRequest headFooRequest = new DefaultServerRequest(servletRequest, emptyList());
+
+		responseStatus = route.route(headFooRequest)
+				.map(handlerFunction -> handle(handlerFunction, getFooRequest))
+				.map(ServerResponse::statusCode)
+				.map(HttpStatus::value);
+		assertThat(responseStatus.get().intValue()).isEqualTo(202);
+
+		servletRequest = new MockHttpServletRequest("POST", "/");
+		servletRequest.setContentType("text/plain");
+		ServerRequest barRequest = new DefaultServerRequest(servletRequest, emptyList());
+
+		responseStatus = route.route(barRequest)
+				.map(handlerFunction -> handle(handlerFunction, barRequest))
+				.map(ServerResponse::statusCode)
+				.map(HttpStatus::value);
+		assertThat(responseStatus.get().intValue()).isEqualTo(204);
+
+		servletRequest = new MockHttpServletRequest("POST", "/");
+		ServerRequest invalidRequest = new DefaultServerRequest(servletRequest, emptyList());
+
+		responseStatus = route.route(invalidRequest)
+				.map(handlerFunction -> handle(handlerFunction, invalidRequest))
 				.map(ServerResponse::statusCode)
 				.map(HttpStatus::value);
 
-		StepVerifier.create(responseMono)
-				.expectNext(200)
-				.verifyComplete();
+		assertThat(responseStatus.isPresent()).isFalse();
 
-		MockServerRequest barRequest = MockServerRequest.builder().
-				method(HttpMethod.POST).
-				uri(URI.create("http://localhost/"))
-				.header("Content-Type", "text/plain")
-				.build();
+	}
 
-		responseMono = route.route(barRequest)
-				.flatMap(handlerFunction -> handlerFunction.handle(barRequest))
-				.map(ServerResponse::statusCode)
-				.map(HttpStatus::value);
-
-		StepVerifier.create(responseMono)
-				.expectNext(204)
-				.verifyComplete();
-
-		MockServerRequest invalidRequest = MockServerRequest.builder().
-				method(HttpMethod.POST).
-				uri(URI.create("http://localhost/"))
-				.build();
-
-		responseMono = route.route(invalidRequest)
-				.flatMap(handlerFunction -> handlerFunction.handle(invalidRequest))
-				.map(ServerResponse::statusCode)
-				.map(HttpStatus::value);
-
-		StepVerifier.create(responseMono)
-				.verifyComplete();
-
+	private static ServerResponse handle(HandlerFunction<ServerResponse> handlerFunction,
+			ServerRequest request) {
+		try {
+			return handlerFunction.handle(request);
+		}
+		catch (Exception ex) {
+			throw new AssertionError(ex.getMessage(), ex);
+		}
 	}
 
 	@Test
 	public void resources() {
-		Resource resource = new ClassPathResource("/org/springframework/web/reactive/function/server/");
-		assertTrue(resource.exists());
+		Resource resource = new ClassPathResource("/org/springframework/web/servlet/function/");
+		assertThat(resource.exists()).isTrue();
 
 		RouterFunction<ServerResponse> route = RouterFunctions.route()
 				.resources("/resources/**", resource)
 				.build();
 
-		MockServerRequest resourceRequest = MockServerRequest.builder().
-				method(HttpMethod.GET).
-				uri(URI.create("http://localhost/resources/response.txt"))
-				.build();
+		MockHttpServletRequest servletRequest =
+				new MockHttpServletRequest("GET", "/resources/response.txt");
+		ServerRequest resourceRequest = new DefaultServerRequest(servletRequest, emptyList());
 
-		Mono<Integer> responseMono = route.route(resourceRequest)
-				.flatMap(handlerFunction -> handlerFunction.handle(resourceRequest))
+		Optional<Integer> responseStatus = route.route(resourceRequest)
+				.map(handlerFunction -> handle(handlerFunction, resourceRequest))
 				.map(ServerResponse::statusCode)
 				.map(HttpStatus::value);
+		assertThat(responseStatus.get().intValue()).isEqualTo(200);
 
-		StepVerifier.create(responseMono)
-				.expectNext(200)
-				.verifyComplete();
+		servletRequest = new MockHttpServletRequest("POST", "/resources/foo.txt");
+		ServerRequest invalidRequest = new DefaultServerRequest(servletRequest, emptyList());
 
-		MockServerRequest invalidRequest = MockServerRequest.builder().
-				method(HttpMethod.POST).
-				uri(URI.create("http://localhost/resources/foo.txt"))
-				.build();
-
-		responseMono = route.route(invalidRequest)
-				.flatMap(handlerFunction -> handlerFunction.handle(invalidRequest))
+		responseStatus = route.route(invalidRequest)
+				.map(handlerFunction -> handle(handlerFunction, invalidRequest))
 				.map(ServerResponse::statusCode)
 				.map(HttpStatus::value);
-
-		StepVerifier.create(responseMono)
-				.verifyComplete();
+		assertThat(responseStatus.isPresent()).isFalse();
 	}
 
 	@Test
 	public void nest() {
-		RouterFunction<?> route = RouterFunctions.route()
+		RouterFunction<ServerResponse> route = RouterFunctions.route()
 				.path("/foo", builder ->
 						builder.path("/bar",
 								() -> RouterFunctions.route()
@@ -135,80 +136,65 @@ public class RouterFunctionBuilderTests {
 										.build()))
 				.build();
 
-		MockServerRequest fooRequest = MockServerRequest.builder().
-				method(HttpMethod.GET).
-				uri(URI.create("http://localhost/foo/bar/baz"))
-				.build();
+		MockHttpServletRequest servletRequest = new MockHttpServletRequest("GET", "/foo/bar/baz");
+		ServerRequest fooRequest = new DefaultServerRequest(servletRequest, emptyList());
 
-		Mono<Integer> responseMono = route.route(fooRequest)
-				.flatMap(handlerFunction -> handlerFunction.handle(fooRequest))
+		Optional<Integer> responseStatus = route.route(fooRequest)
+				.map(handlerFunction -> handle(handlerFunction, fooRequest))
 				.map(ServerResponse::statusCode)
 				.map(HttpStatus::value);
-
-		StepVerifier.create(responseMono)
-				.expectNext(200)
-				.verifyComplete();
+		assertThat(responseStatus.get().intValue()).isEqualTo(200);
 	}
 
 	@Test
 	public void filters() {
 		AtomicInteger filterCount = new AtomicInteger();
 
-		RouterFunction<?> route = RouterFunctions.route()
+		RouterFunction<ServerResponse> route = RouterFunctions.route()
 				.GET("/foo", request -> ServerResponse.ok().build())
-				.GET("/bar", request -> Mono.error(new IllegalStateException()))
+				.GET("/bar", request -> {
+					throw new IllegalStateException();
+				})
 				.before(request -> {
 					int count = filterCount.getAndIncrement();
-					assertEquals(0, count);
+					assertThat(count).isEqualTo(0);
 					return request;
 				})
 				.after((request, response) -> {
 					int count = filterCount.getAndIncrement();
-					assertEquals(3, count);
+					assertThat(count).isEqualTo(3);
 					return response;
 				})
 				.filter((request, next) -> {
 					int count = filterCount.getAndIncrement();
-					assertEquals(1, count);
-					Mono<ServerResponse> responseMono = next.handle(request);
+					assertThat(count).isEqualTo(1);
+					ServerResponse responseMono = next.handle(request);
 					count = filterCount.getAndIncrement();
-					assertEquals(2, count);
+					assertThat(count).isEqualTo(2);
 					return responseMono;
 				})
-				.onError(IllegalStateException.class, (e, request) -> ServerResponse.status(HttpStatus.INTERNAL_SERVER_ERROR).build())
+				.onError(IllegalStateException.class,
+						(e, request) -> ServerResponse.status(HttpStatus.INTERNAL_SERVER_ERROR)
+								.build())
 				.build();
 
-		MockServerRequest fooRequest = MockServerRequest.builder().
-				method(HttpMethod.GET).
-				uri(URI.create("http://localhost/foo"))
-				.build();
+		MockHttpServletRequest servletRequest = new MockHttpServletRequest("GET", "/foo");
+		ServerRequest fooRequest = new DefaultServerRequest(servletRequest, emptyList());
 
-		Mono<ServerResponse> fooResponseMono = route.route(fooRequest)
-				.flatMap(handlerFunction -> handlerFunction.handle(fooRequest));
-
-
-		StepVerifier.create(fooResponseMono)
-				.consumeNextWith(serverResponse -> {
-					assertEquals(4, filterCount.get());
-				})
-				.verifyComplete();
+		route.route(fooRequest)
+				.map(handlerFunction -> handle(handlerFunction, fooRequest));
+		assertThat(filterCount.get()).isEqualTo(4);
 
 		filterCount.set(0);
 
-		MockServerRequest barRequest = MockServerRequest.builder().
-				method(HttpMethod.GET).
-				uri(URI.create("http://localhost/bar"))
-				.build();
+		servletRequest = new MockHttpServletRequest("GET", "/bar");
+		ServerRequest barRequest = new DefaultServerRequest(servletRequest, emptyList());
 
-
-		Mono<Integer> barResponseMono = route.route(barRequest)
-				.flatMap(handlerFunction -> handlerFunction.handle(barRequest))
+		Optional<Integer> responseStatus = route.route(barRequest)
+				.map(handlerFunction -> handle(handlerFunction, barRequest))
 				.map(ServerResponse::statusCode)
 				.map(HttpStatus::value);
-
-		StepVerifier.create(barResponseMono)
-				.expectNext(500)
-				.verifyComplete();
+		assertThat(responseStatus.get().intValue()).isEqualTo(500);
 	}
 
 }
