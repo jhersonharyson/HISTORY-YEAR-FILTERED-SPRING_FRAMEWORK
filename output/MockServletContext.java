@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.springframework.mock.web;
+package org.springframework.web.testfixture.servlet;
 
 import java.io.File;
 import java.io.IOException;

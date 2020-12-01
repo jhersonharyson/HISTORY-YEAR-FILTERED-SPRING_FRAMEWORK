@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.springframework.test.web.servlet.samples.standalone;
+package org.springframework.test.web.servlet.samples.client.standalone;
 
 import java.io.IOException;
 import java.security.Principal;
@@ -22,7 +22,6 @@ import java.util.concurrent.CompletableFuture;
 
 import javax.servlet.AsyncContext;
 import javax.servlet.AsyncListener;
-import javax.servlet.Filter;
 import javax.servlet.FilterChain;
 import javax.servlet.ServletContext;
 import javax.servlet.ServletException;
@@ -39,8 +38,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Controller;
 import org.springframework.test.web.Person;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.reactive.server.EntityExchangeResult;
+import org.springframework.test.web.reactive.server.WebTestClient;
+import org.springframework.test.web.servlet.client.MockMvcWebTestClient;
 import org.springframework.validation.Errors;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -50,31 +50,31 @@ import org.springframework.web.filter.ShallowEtagHeaderFilter;
 import org.springframework.web.servlet.ModelAndView;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.flash;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup;
 
 /**
- * Tests with {@link Filter}'s.
- * @author Rob Winch
+ * {@link MockMvcWebTestClient} equivalent of the MockMvc
+ * {@link org.springframework.test.web.servlet.samples.standalone.FilterTests}.
+ *
+ * @author Rossen Stoyanchev
  */
 public class FilterTests {
 
 	@Test
 	public void whenFiltersCompleteMvcProcessesRequest() throws Exception {
-		standaloneSetup(new PersonController())
-			.addFilters(new ContinueFilter()).build()
-			.perform(post("/persons").param("name", "Andy"))
-				.andExpect(status().isFound())
-				.andExpect(redirectedUrl("/person/1"))
+		WebTestClient client = MockMvcWebTestClient.bindToController(new PersonController())
+				.filters(new ContinueFilter())
+				.build();
+
+		EntityExchangeResult<Void> exchangeResult = client.post().uri("/persons?name=Andy")
+				.exchange()
+				.expectStatus().isFound()
+				.expectHeader().location("/person/1")
+				.expectBody().isEmpty();
+
+		// Further assertions on the server response
+		MockMvcWebTestClient.resultActionsFor(exchangeResult)
 				.andExpect(model().size(1))
 				.andExpect(model().attributeExists("id"))
 				.andExpect(flash().attributeCount(1))
@@ -82,36 +82,56 @@ public class FilterTests {
 	}
 
 	@Test
-	public void filtersProcessRequest() throws Exception {
-		standaloneSetup(new PersonController())
-			.addFilters(new ContinueFilter(), new RedirectFilter()).build()
-			.perform(post("/persons").param("name", "Andy"))
-				.andExpect(redirectedUrl("/login"));
+	public void filtersProcessRequest() {
+		WebTestClient client = MockMvcWebTestClient.bindToController(new PersonController())
+				.filters(new ContinueFilter(), new RedirectFilter())
+				.build();
+
+		client.post().uri("/persons?name=Andy")
+				.exchange()
+				.expectStatus().isFound()
+				.expectHeader().location("/login");
 	}
 
 	@Test
-	public void filterMappedBySuffix() throws Exception {
-		standaloneSetup(new PersonController())
-			.addFilter(new RedirectFilter(), "*.html").build()
-			.perform(post("/persons.html").param("name", "Andy"))
-				.andExpect(redirectedUrl("/login"));
+	public void filterMappedBySuffix() {
+		WebTestClient client = MockMvcWebTestClient.bindToController(new PersonController())
+				.filter(new RedirectFilter(), "*.html")
+				.build();
+
+		client.post().uri("/persons.html?name=Andy")
+				.exchange()
+				.expectStatus().isFound()
+				.expectHeader().location("/login");
 	}
 
 	@Test
-	public void filterWithExactMapping() throws Exception {
-		standaloneSetup(new PersonController())
-			.addFilter(new RedirectFilter(), "/p", "/persons").build()
-			.perform(post("/persons").param("name", "Andy"))
-				.andExpect(redirectedUrl("/login"));
+	public void filterWithExactMapping() {
+		WebTestClient client = MockMvcWebTestClient.bindToController(new PersonController())
+				.filter(new RedirectFilter(), "/p", "/persons")
+				.build();
+
+		client.post().uri("/persons?name=Andy")
+				.exchange()
+				.expectStatus().isFound()
+				.expectHeader().location("/login");
 	}
 
 	@Test
 	public void filterSkipped() throws Exception {
-		standaloneSetup(new PersonController())
-			.addFilter(new RedirectFilter(), "/p", "/person").build()
-			.perform(post("/persons").param("name", "Andy"))
-				.andExpect(status().isFound())
-				.andExpect(redirectedUrl("/person/1"))
+		WebTestClient client = MockMvcWebTestClient.bindToController(new PersonController())
+				.filter(new RedirectFilter(), "/p", "/person")
+				.build();
+
+		EntityExchangeResult<Void> exchangeResult =
+				client.post().uri("/persons?name=Andy")
+						.exchange()
+						.expectStatus().isFound()
+						.expectHeader().location("/person/1")
+						.expectBody().isEmpty();
+
+		// Further assertions on the server response
+		MockMvcWebTestClient.resultActionsFor(exchangeResult)
 				.andExpect(model().size(1))
 				.andExpect(model().attributeExists("id"))
 				.andExpect(flash().attributeCount(1))
@@ -120,28 +140,31 @@ public class FilterTests {
 
 	@Test
 	public void filterWrapsRequestResponse() throws Exception {
-		standaloneSetup(new PersonController())
-			.addFilters(new WrappingRequestResponseFilter()).build()
-			.perform(post("/user"))
+		WebTestClient client = MockMvcWebTestClient.bindToController(new PersonController())
+				.filter(new WrappingRequestResponseFilter())
+				.build();
+
+		EntityExchangeResult<Void> exchangeResult =
+				client.post().uri("/user").exchange().expectBody().isEmpty();
+
+		// Further assertions on the server response
+		MockMvcWebTestClient.resultActionsFor(exchangeResult)
 				.andExpect(model().attribute("principal", WrappingRequestResponseFilter.PRINCIPAL_NAME));
 	}
 
-	@Test // SPR-16067, SPR-16695
-	public void filterWrapsRequestResponseAndPerformsAsyncDispatch() throws Exception {
-		MockMvc mockMvc = standaloneSetup(new PersonController())
-				.addFilters(new WrappingRequestResponseFilter(), new ShallowEtagHeaderFilter())
+	@Test
+	public void filterWrapsRequestResponseAndPerformsAsyncDispatch() {
+		WebTestClient client = MockMvcWebTestClient.bindToController(new PersonController())
+				.filters(new WrappingRequestResponseFilter(), new ShallowEtagHeaderFilter())
 				.build();
 
-		MvcResult mvcResult = mockMvc.perform(get("/persons/1").accept(MediaType.APPLICATION_JSON))
-				.andExpect(request().asyncStarted())
-				.andExpect(request().asyncResult(new Person("Lukas")))
-				.andReturn();
-
-		mockMvc.perform(asyncDispatch(mvcResult))
-				.andExpect(status().isOk())
-				.andExpect(header().longValue("Content-Length", 53))
-				.andExpect(header().string("ETag", "\"0e37becb4f0c90709cb2e1efcc61eaa00\""))
-				.andExpect(content().string("{\"name\":\"Lukas\",\"someDouble\":0.0,\"someBoolean\":false}"));
+		client.get().uri("/persons/1")
+				.accept(MediaType.APPLICATION_JSON)
+				.exchange()
+				.expectStatus().isOk()
+				.expectHeader().contentLength(53)
+				.expectHeader().valueEquals("ETag", "\"0e37becb4f0c90709cb2e1efcc61eaa00\"")
+				.expectBody().json("{\"name\":\"Lukas\",\"someDouble\":0.0,\"someBoolean\":false}");
 	}
 
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,6 +40,7 @@ import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 import org.springframework.web.reactive.socket.HandshakeInfo;
 import org.springframework.web.reactive.socket.WebSocketHandler;
+import org.springframework.web.reactive.socket.adapter.ContextWebSocketHandler;
 import org.springframework.web.reactive.socket.adapter.JettyWebSocketHandlerAdapter;
 import org.springframework.web.reactive.socket.adapter.JettyWebSocketSession;
 import org.springframework.web.reactive.socket.server.RequestUpgradeStrategy;
@@ -67,7 +68,7 @@ public class JettyRequestUpgradeStrategy implements RequestUpgradeStrategy, Life
 	@Nullable
 	private volatile ServletContext servletContext;
 
-	private volatile boolean running = false;
+	private volatile boolean running;
 
 	private final Object lifecycleMonitor = new Object();
 
@@ -153,27 +154,31 @@ public class JettyRequestUpgradeStrategy implements RequestUpgradeStrategy, Life
 		HandshakeInfo handshakeInfo = handshakeInfoFactory.get();
 		DataBufferFactory factory = response.bufferFactory();
 
-		JettyWebSocketHandlerAdapter adapter = new JettyWebSocketHandlerAdapter(
-				handler, session -> new JettyWebSocketSession(session, handshakeInfo, factory));
-
 		startLazily(servletRequest);
 
 		Assert.state(this.factory != null, "No WebSocketServerFactory available");
 		boolean isUpgrade = this.factory.isUpgradeRequest(servletRequest, servletResponse);
 		Assert.isTrue(isUpgrade, "Not a WebSocket handshake");
 
-		try {
-			adapterHolder.set(new WebSocketHandlerContainer(adapter, subProtocol));
-			this.factory.acceptWebSocket(servletRequest, servletResponse);
-		}
-		catch (IOException ex) {
-			return Mono.error(ex);
-		}
-		finally {
-			adapterHolder.remove();
-		}
+		// Trigger WebFlux preCommit actions and upgrade
+		return exchange.getResponse().setComplete()
+				.then(Mono.deferContextual(contextView -> {
+					JettyWebSocketHandlerAdapter adapter = new JettyWebSocketHandlerAdapter(
+							ContextWebSocketHandler.decorate(handler, contextView),
+							session -> new JettyWebSocketSession(session, handshakeInfo, factory));
 
-		return Mono.empty();
+					try {
+						adapterHolder.set(new WebSocketHandlerContainer(adapter, subProtocol));
+						this.factory.acceptWebSocket(servletRequest, servletResponse);
+					}
+					catch (IOException ex) {
+						return Mono.error(ex);
+					}
+					finally {
+						adapterHolder.remove();
+					}
+					return Mono.empty();
+				}));
 	}
 
 	private static HttpServletRequest getNativeRequest(ServerHttpRequest request) {

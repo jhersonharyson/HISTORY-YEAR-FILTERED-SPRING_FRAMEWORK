@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.springframework.mock.web;
+package org.springframework.web.testfixture.servlet;
 
 import java.io.IOException;
 import java.util.ArrayList;

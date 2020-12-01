@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.springframework.test.web.servlet.samples.context;
+package org.springframework.test.web.servlet.samples.client.context;
 
 import java.util.Collections;
 import java.util.Map;
@@ -33,9 +33,8 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.ContextHierarchy;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 import org.springframework.test.context.web.WebAppConfiguration;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.test.web.reactive.server.WebTestClient;
+import org.springframework.test.web.servlet.client.MockMvcWebTestClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.context.WebApplicationContext;
@@ -45,17 +44,12 @@ import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Tests with Java configuration.
+ * {@link MockMvcWebTestClient} equivalent of the MockMvc
+ * {@link org.springframework.test.web.servlet.samples.context.AsyncControllerJavaConfigTests}.
  *
  * @author Rossen Stoyanchev
- * @author Sam Brannen
  */
 @ExtendWith(SpringExtension.class)
 @WebAppConfiguration
@@ -68,33 +62,25 @@ public class AsyncControllerJavaConfigTests {
 	@Autowired
 	private CallableProcessingInterceptor callableInterceptor;
 
-	private MockMvc mockMvc;
+	private WebTestClient testClient;
 
 
 	@BeforeEach
 	public void setup() {
-		this.mockMvc = MockMvcBuilders.webAppContextSetup(this.wac).build();
+		this.testClient = MockMvcWebTestClient.bindToApplicationContext(this.wac).build();
 	}
-
-	// SPR-13615
 
 	@Test
 	public void callableInterceptor() throws Exception {
-		MvcResult mvcResult = this.mockMvc.perform(get("/callable").accept(MediaType.APPLICATION_JSON))
-				.andExpect(status().isOk())
-				.andExpect(request().asyncStarted())
-				.andExpect(request().asyncResult(Collections.singletonMap("key", "value")))
-				.andReturn();
+		testClient.get().uri("/callable")
+				.accept(MediaType.APPLICATION_JSON)
+				.exchange()
+				.expectStatus().isOk()
+				.expectBody().json("{\"key\":\"value\"}");
 
 		Mockito.verify(this.callableInterceptor).beforeConcurrentHandling(any(), any());
 		Mockito.verify(this.callableInterceptor).preProcess(any(), any());
 		Mockito.verify(this.callableInterceptor).postProcess(any(), any(), any());
-		Mockito.verifyNoMoreInteractions(this.callableInterceptor);
-
-		this.mockMvc.perform(asyncDispatch(mvcResult))
-				.andExpect(status().isOk())
-				.andExpect(content().string("{\"key\":\"value\"}"));
-
 		Mockito.verify(this.callableInterceptor).afterCompletion(any(), any());
 		Mockito.verifyNoMoreInteractions(this.callableInterceptor);
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,7 @@
  * limitations under the License.
  */
 
-package org.springframework.test.web.servlet.samples.context;
-
-import javax.servlet.ServletContext;
+package org.springframework.test.web.servlet.samples.client.context;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,7 +22,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mockito;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
@@ -33,10 +30,10 @@ import org.springframework.test.context.ContextHierarchy;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 import org.springframework.test.context.web.WebAppConfiguration;
 import org.springframework.test.web.Person;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.samples.context.JavaConfigTests.RootConfig;
-import org.springframework.test.web.servlet.samples.context.JavaConfigTests.WebConfig;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.test.web.reactive.server.WebTestClient;
+import org.springframework.test.web.servlet.client.MockMvcWebTestClient;
+import org.springframework.test.web.servlet.samples.context.PersonController;
+import org.springframework.test.web.servlet.samples.context.PersonDao;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.servlet.config.annotation.DefaultServletHandlerConfigurer;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
@@ -46,29 +43,21 @@ import org.springframework.web.servlet.config.annotation.ViewResolverRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.view.tiles3.TilesConfigurer;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultHandlers.print;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Tests with Java configuration.
+ * {@link MockMvcWebTestClient} equivalent of the MockMvc
+ * {@link org.springframework.test.web.servlet.samples.context.JavaConfigTests}.
  *
  * @author Rossen Stoyanchev
- * @author Sam Brannen
- * @author Sebastien Deleuze
  */
 @ExtendWith(SpringExtension.class)
 @WebAppConfiguration("classpath:META-INF/web-resources")
 @ContextHierarchy({
-	@ContextConfiguration(classes = RootConfig.class),
-	@ContextConfiguration(classes = WebConfig.class)
+	@ContextConfiguration(classes = JavaConfigTests.RootConfig.class),
+	@ContextConfiguration(classes = JavaConfigTests.WebConfig.class)
 })
-public class JavaConfigTests {
+class JavaConfigTests {
 
 	@Autowired
 	private WebApplicationContext wac;
@@ -76,62 +65,31 @@ public class JavaConfigTests {
 	@Autowired
 	private PersonDao personDao;
 
-	@Autowired
-	private PersonController personController;
-
-	private MockMvc mockMvc;
+	private WebTestClient testClient;
 
 
 	@BeforeEach
-	public void setup() {
-		this.mockMvc = MockMvcBuilders.webAppContextSetup(this.wac).build();
-		verifyRootWacSupport();
+	void setup() {
+		this.testClient = MockMvcWebTestClient.bindToApplicationContext(this.wac).build();
 		given(this.personDao.getPerson(5L)).willReturn(new Person("Joe"));
 	}
 
+
 	@Test
-	public void person() throws Exception {
-		this.mockMvc.perform(get("/person/5").accept(MediaType.APPLICATION_JSON))
-			.andDo(print())
-			.andExpect(status().isOk())
-			.andExpect(request().asyncNotStarted())
-			.andExpect(content().string("{\"name\":\"Joe\",\"someDouble\":0.0,\"someBoolean\":false}"));
+	void person() {
+		testClient.get().uri("/person/5")
+				.accept(MediaType.APPLICATION_JSON)
+				.exchange()
+				.expectStatus().isOk()
+				.expectBody().json("{\"name\":\"Joe\",\"someDouble\":0.0,\"someBoolean\":false}");
 	}
 
 	@Test
-	public void tilesDefinitions() throws Exception {
-		this.mockMvc.perform(get("/"))
-			.andExpect(status().isOk())
-			.andExpect(forwardedUrl("/WEB-INF/layouts/standardLayout.jsp"));
-	}
-
-	/**
-	 * Verify that the breaking change introduced in <a
-	 * href="https://jira.spring.io/browse/SPR-12553">SPR-12553</a> has been reverted.
-	 *
-	 * <p>This code has been copied from
-	 * {@link org.springframework.test.context.hierarchies.web.ControllerIntegrationTests}.
-	 *
-	 * @see org.springframework.test.context.hierarchies.web.ControllerIntegrationTests#verifyRootWacSupport()
-	 */
-	private void verifyRootWacSupport() {
-		assertThat(personDao).isNotNull();
-		assertThat(personController).isNotNull();
-
-		ApplicationContext parent = wac.getParent();
-		assertThat(parent).isNotNull();
-		boolean condition = parent instanceof WebApplicationContext;
-		assertThat(condition).isTrue();
-		WebApplicationContext root = (WebApplicationContext) parent;
-
-		ServletContext childServletContext = wac.getServletContext();
-		assertThat(childServletContext).isNotNull();
-		ServletContext rootServletContext = root.getServletContext();
-		assertThat(rootServletContext).isNotNull();
-		assertThat(rootServletContext).isSameAs(childServletContext);
-
-		assertThat(rootServletContext.getAttribute(WebApplicationContext.ROOT_WEB_APPLICATION_CONTEXT_ATTRIBUTE)).isSameAs(root);
-		assertThat(childServletContext.getAttribute(WebApplicationContext.ROOT_WEB_APPLICATION_CONTEXT_ATTRIBUTE)).isSameAs(root);
+	void tilesDefinitions() {
+		testClient.get().uri("/")
+				.exchange()
+				.expectStatus().isOk()
+				.expectHeader().valueEquals("Forwarded-Url", "/WEB-INF/layouts/standardLayout.jsp");
 	}
 
 
@@ -139,7 +97,7 @@ public class JavaConfigTests {
 	static class RootConfig {
 
 		@Bean
-		public PersonDao personDao() {
+		PersonDao personDao() {
 			return Mockito.mock(PersonDao.class);
 		}
 	}
@@ -152,7 +110,7 @@ public class JavaConfigTests {
 		private RootConfig rootConfig;
 
 		@Bean
-		public PersonController personController() {
+		PersonController personController() {
 			return new PersonController(this.rootConfig.personDao());
 		}
 
@@ -177,7 +135,7 @@ public class JavaConfigTests {
 		}
 
 		@Bean
-		public TilesConfigurer tilesConfigurer() {
+		TilesConfigurer tilesConfigurer() {
 			TilesConfigurer configurer = new TilesConfigurer();
 			configurer.setDefinitions("/WEB-INF/**/tiles.xml");
 			return configurer;

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.springframework.test.web.servlet.samples.context;
+package org.springframework.test.web.servlet.samples.client.context;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,28 +27,24 @@ import org.springframework.test.context.ContextHierarchy;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 import org.springframework.test.context.web.WebAppConfiguration;
 import org.springframework.test.web.Person;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.test.web.reactive.server.WebTestClient;
+import org.springframework.test.web.servlet.client.MockMvcWebTestClient;
+import org.springframework.test.web.servlet.samples.context.PersonDao;
 import org.springframework.web.context.WebApplicationContext;
 
 import static org.mockito.BDDMockito.given;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultHandlers.print;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Tests with XML configuration.
+ * {@link MockMvcWebTestClient} equivalent of the MockMvc
+ * {@link org.springframework.test.web.servlet.samples.context.XmlConfigTests}.
  *
  * @author Rossen Stoyanchev
- * @author Sam Brannen
  */
 @ExtendWith(SpringExtension.class)
 @WebAppConfiguration("src/test/resources/META-INF/web-resources")
 @ContextHierarchy({
-	@ContextConfiguration("root-context.xml"),
-	@ContextConfiguration("servlet-context.xml")
+	@ContextConfiguration("../../context/root-context.xml"),
+	@ContextConfiguration("../../context/servlet-context.xml")
 })
 public class XmlConfigTests {
 
@@ -58,28 +54,31 @@ public class XmlConfigTests {
 	@Autowired
 	private PersonDao personDao;
 
-	private MockMvc mockMvc;
+	private WebTestClient testClient;
 
 
 	@BeforeEach
 	public void setup() {
-		this.mockMvc = MockMvcBuilders.webAppContextSetup(this.wac).build();
+		this.testClient = MockMvcWebTestClient.bindToApplicationContext(this.wac).build();
 		given(this.personDao.getPerson(5L)).willReturn(new Person("Joe"));
 	}
 
+
 	@Test
-	public void person() throws Exception {
-		this.mockMvc.perform(get("/person/5").accept(MediaType.APPLICATION_JSON))
-			.andDo(print())
-			.andExpect(status().isOk())
-			.andExpect(content().string("{\"name\":\"Joe\",\"someDouble\":0.0,\"someBoolean\":false}"));
+	public void person() {
+		testClient.get().uri("/person/5")
+				.accept(MediaType.APPLICATION_JSON)
+				.exchange()
+				.expectStatus().isOk()
+				.expectBody().json("{\"name\":\"Joe\",\"someDouble\":0.0,\"someBoolean\":false}");
 	}
 
 	@Test
-	public void tilesDefinitions() throws Exception {
-		this.mockMvc.perform(get("/"))//
-		.andExpect(status().isOk())//
-		.andExpect(forwardedUrl("/WEB-INF/layouts/standardLayout.jsp"));
+	public void tilesDefinitions() {
+		testClient.get().uri("/")
+				.exchange()
+				.expectStatus().isOk()
+				.expectHeader().valueEquals("Forwarded-Url", "/WEB-INF/layouts/standardLayout.jsp");
 	}
 
 }
